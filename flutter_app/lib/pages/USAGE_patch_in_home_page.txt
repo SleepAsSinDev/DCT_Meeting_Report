@@ -1,0 +1,16 @@
+// --- SAMPLE usage inside HomePage.pickAndTranscribe() ---
+      await for (final ev in widget.api.transcribeStreamUpload(
+        path,
+        // language/modelSize/quality omitted → defaults (th/small/fast)
+        onSendProgress: (sent, total) {
+          // อัปเดตเปอร์เซ็นต์การอัปโหลด
+          final percent = total > 0 ? (sent / total * 100.0) : 0.0;
+          setState(() {
+            status = 'กำลังอัปโหลด... ${percent.toStringAsFixed(1)}%';
+          });
+        },
+      )) {
+        final event = (ev['event'] as String?) ?? '';
+        if (event == 'progress') { /* เหมือนเดิม: อัปเดตเปอร์เซ็นต์ถอดเสียง */ }
+        else if (event == 'done') { /* เหมือนเดิม */ }
+      }

@@ -1,0 +1,66 @@
+# --- ADD to server/main.py ---
+from fastapi import Request, Query
+
+@app.post("/transcribe_stream_upload")
+async def transcribe_stream_upload(
+    request: Request,
+    language: str = Query(LANGUAGE_DEFAULT),
+    model_size: str = Query(MODEL_SIZE_DEFAULT),
+    quality: str = Query(QUALITY_DEFAULT),
+    initial_prompt: Optional[str] = Query(None),
+    preprocess: bool = Query(False),
+    fast_preprocess: bool = Query(False),
+):
+    model_size = _normalize_model_name(model_size)
+    language = _normalize_language(language)
+    params = _choose_params(quality)
+    model = _get_model(model_size)
+
+    import tempfile as _tf
+    import uuid
+    suffix = ".bin"
+    tmp_path = _tf.gettempdir() + f"/upload_{uuid.uuid4().hex}{suffix}"
+
+    # Receive raw body as stream and write to file
+    with open(tmp_path, "wb") as f:
+        async for chunk in request.stream():
+            if chunk:
+                f.write(chunk)
+                # (อาจส่งอีเวนต์ progress การอัปโหลดไม่ได้ เพราะ HTTP1.1 ไม่มี bidi ระหว่าง upload/response)
+
+    wav_path = _maybe_preprocess(tmp_path, preprocess, quick=fast_preprocess)
+
+    def gen():
+        try:
+            yield (_json.dumps({"event":"progress","progress":0.0,"partial_text":""})+"\n").encode("utf-8")
+            segments_gen, info = model.transcribe(
+                wav_path,
+                language=None if language=="auto" else language,
+                initial_prompt=initial_prompt,
+                **params,
+            )
+            full = []
+            duration = float(getattr(info, "duration", 0.0) or 0.0)
+            for seg in segments_gen:
+                full.append(seg.text)
+                pr = (seg.end/duration*100.0) if duration>0 else 0.0
+                yield (_json.dumps({"event":"progress","progress":round(pr,2),"partial_text":seg.text})+"\n").encode("utf-8")
+            yield (_json.dumps({
+                "event":"done","text":" ".join(full).strip(),
+                "language": getattr(info,"language","auto"),
+                "duration_sec": duration,
+                "model": f"faster-whisper-{model_size}({COMPUTE_TYPE})",
+                "quality": _normalize_quality(quality),
+                "cpu_threads": CPU_THREADS_DEFAULT,
+                "num_workers": NUM_WORKERS_DEFAULT,
+                "preprocess": preprocess,
+                "fast_preprocess": fast_preprocess,
+            })+"\n").encode("utf-8")
+        finally:
+            try: os.remove(tmp_path)
+            except Exception: pass
+            if wav_path != tmp_path:
+                try: os.remove(wav_path)
+                except Exception: pass
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")

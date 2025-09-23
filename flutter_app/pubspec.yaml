@@ -1,0 +1,21 @@
+name: meeting_minutes_app
+description: "Meeting minutes app with Faster-Whisper + Flutter"
+publish_to: "none"
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dio: ^5.6.0
+  file_picker: ^8.1.2
+  flutter_markdown: ^0.6.22
+  path: ^1.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
