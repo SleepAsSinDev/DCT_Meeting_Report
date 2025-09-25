@@ -1,4 +1,4 @@
-import os, json as _json, tempfile as _tf, threading, subprocess, shlex
+import os, json as _json, tempfile as _tf, threading, subprocess
 from typing import Dict, Optional
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,19 +6,70 @@ from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 from faster_whisper import WhisperModel
 
+_MODEL_SIZE_ENV = os.getenv("WHISPER_MODEL", "large-v3")
+
+# Allow overriding host/port/ffmpeg via env without relying on CLI arguments.
+HOST_DEFAULT = (
+    os.getenv("MEETING_SERVER_HOST")
+    or os.getenv("WHISPER_HOST")
+    or os.getenv("HOST")
+    or "127.0.0.1"
+)
+PORT_DEFAULT = int(
+    os.getenv("MEETING_SERVER_PORT")
+    or os.getenv("WHISPER_PORT")
+    or os.getenv("PORT")
+    or "8000"
+)
+
+_FFMPEG_ENV = (
+    os.getenv("MEETING_SERVER_FFMPEG")
+    or os.getenv("FFMPEG_BIN")
+    or os.getenv("FFMPEG_PATH")
+    or "ffmpeg"
+)
+
 # -------- Defaults (Thai + accuracy-first, but tunable) --------
-MODEL_SIZE_DEFAULT = os.getenv("WHISPER_MODEL", "large-v3")  # small | medium | large-v3
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8")          # CPU:int8  | GPU:float16|float32
 LANGUAGE_DEFAULT = os.getenv("WHISPER_LANG", "th")           # default Thai
 QUALITY_DEFAULT = os.getenv("WHISPER_QUALITY", "accurate")   # accurate | balanced | fast | hyperfast
 CPU_THREADS_DEFAULT = int(os.getenv("WHISPER_CPU_THREADS", str(os.cpu_count() or 4)))
 NUM_WORKERS_DEFAULT = int(os.getenv("WHISPER_NUM_WORKERS", "1"))
 
-def _normalize_model_name(name: str) -> str:
+
+def _is_path_like(value: str) -> bool:
+    if not value:
+        return False
+    tokens = (os.sep, os.altsep or "", "/", "\\")
+    return value.startswith(("./", "../", "~")) or any(sep in value for sep in tokens if sep)
+
+
+def _resolve_relative_to_here(raw: str) -> str:
+    raw = os.path.expanduser(raw)
+    if os.path.isabs(raw):
+        return os.path.abspath(raw)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(base_dir, raw))
+
+
+def _normalize_model_name_raw(name: str) -> str:
+    if _is_path_like(name):
+        return _resolve_relative_to_here(name)
+    lowered = name.strip().lower()
+    return "large-v3" if lowered == "large" else lowered
+
+
+MODEL_SIZE_DEFAULT = _normalize_model_name_raw(_MODEL_SIZE_ENV)
+FFMPEG_BIN = (
+    _resolve_relative_to_here(_FFMPEG_ENV)
+    if _is_path_like(_FFMPEG_ENV)
+    else _FFMPEG_ENV
+)
+
+def _normalize_model_name(name: Optional[str]) -> str:
     if not name:
         return MODEL_SIZE_DEFAULT
-    name = name.strip().lower()
-    return "large-v3" if name == "large" else name
+    return _normalize_model_name_raw(name.strip())
 
 def _normalize_language(lang: str) -> str:
     if not lang:
@@ -87,15 +138,39 @@ def _maybe_preprocess(path_in: str, enable: bool, quick: bool=False) -> str:
     try:
         if quick:
             # Faster: only resample/mono
-            cmd = f"ffmpeg -y -hide_banner -loglevel error -i {shlex.quote(path_in)} -ac 1 -ar 16000 {shlex.quote(out)}"
+            cmd = [
+                FFMPEG_BIN,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                path_in,
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                out,
+            ]
         else:
             # Higher accuracy: normalize + filters
-            cmd = (
-                "ffmpeg -y -hide_banner -loglevel error -i {inp} -ac 1 -ar 16000 "
-                "-af highpass=f=100,lowpass=f=8000,loudnorm=I=-16:TP=-1.5:LRA=11 "
-                "{out}"
-            ).format(inp=shlex.quote(path_in), out=shlex.quote(out))
-        subprocess.run(cmd, shell=True, check=True)
+            cmd = [
+                FFMPEG_BIN,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                path_in,
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-af",
+                "highpass=f=100,lowpass=f=8000,loudnorm=I=-16:TP=-1.5:LRA=11",
+                out,
+            ]
+        subprocess.run(cmd, check=True)
         return out
     except Exception:
         return path_in
@@ -107,10 +182,13 @@ def healthz():
         "default_model": _normalize_model_name(MODEL_SIZE_DEFAULT),
         "default_language": LANGUAGE_DEFAULT,
         "default_quality": QUALITY_DEFAULT,
+        "host": HOST_DEFAULT,
+        "port": PORT_DEFAULT,
         "cpu_threads": CPU_THREADS_DEFAULT,
         "num_workers": NUM_WORKERS_DEFAULT,
         "compute": COMPUTE_TYPE,
         "loaded_models": list(_models.keys()),
+        "ffmpeg": FFMPEG_BIN,
     }
 
 @app.post("/transcribe")
@@ -244,4 +322,5 @@ async def summarize(req: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000)
+
+    uvicorn.run("main:app", host=HOST_DEFAULT, port=PORT_DEFAULT)

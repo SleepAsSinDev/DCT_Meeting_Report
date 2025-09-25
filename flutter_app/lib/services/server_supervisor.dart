@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -13,6 +12,7 @@ class ServerSupervisor {
   final Duration startTimeout;
   final bool useReload; // if true -> --reload (dev hot-reload)
   final Dio dio;
+  final List<String> binaryNames;
   // Live status for UI
   final ValueNotifier<String> status =
       ValueNotifier<String>('กำลังตรวจสอบเซิร์ฟเวอร์...');
@@ -27,12 +27,23 @@ class ServerSupervisor {
     this.startTimeout = const Duration(seconds: 120),
     this.useReload = false,
     Dio? dio,
-  }) : dio = dio ??
+    List<String>? binaryNames,
+  })  : dio = dio ??
             Dio(BaseOptions(
-              baseUrl: 'http://127.0.0.1:8000',
+              baseUrl: 'http://$host:$port',
               connectTimeout: const Duration(seconds: 2),
               receiveTimeout: const Duration(seconds: 5),
-            ));
+            )),
+        binaryNames = List.unmodifiable(
+          binaryNames ?? _defaultBinaryNames(),
+        );
+
+  static List<String> _defaultBinaryNames() {
+    if (Platform.isWindows) {
+      return ['meeting_server.exe', 'meeting_server'];
+    }
+    return ['meeting_server'];
+  }
 
   Future<bool> _isHealthy() async {
     try {
@@ -44,7 +55,7 @@ class ServerSupervisor {
   }
 
   Future<void> ensureStarted() async {
-    status.value = 'กำลังตรวจสอบเซิร์ฟเวอร์ที่พอร์ต $port...';
+    status.value = 'กำลังตรวจสอบเซิร์ฟเวอร์ที่ http://$host:$port...';
     if (await _isHealthy()) {
       startedByUs = false;
       status.value = 'พบเซิร์ฟเวอร์ที่ทำงานอยู่แล้ว';
@@ -56,53 +67,62 @@ class ServerSupervisor {
     // Resolve server dir first
     final resolvedDir = _resolveServerDir();
     status.value = 'ตำแหน่ง server: $resolvedDir';
-    if (!Directory(resolvedDir).existsSync() ||
-        !File(p.join(resolvedDir, 'main.py')).existsSync()) {
-      final msg =
-          'ไม่พบ server/main.py ที่: $resolvedDir\nโปรดตั้งค่า serverDir ให้เป็น path แบบ absolute ไปยังโฟลเดอร์ server';
-      status.value = msg;
-      throw Exception(msg);
-    }
 
-    final python = _findPython(resolvedDir);
-    final args = <String>[
-      '-m',
-      'uvicorn',
-      'main:app',
-      '--host',
-      host,
-      '--port',
-      port.toString(),
-    ];
-    if (useReload) {
-      args.add('--reload'); // dev only
-    }
+    final binaryPath = _findBundledBinary(resolvedDir);
+    final environment = Map<String, String>.from(Platform.environment)
+      ..['HOST'] = host
+      ..['PORT'] = port.toString()
+      ..['MEETING_SERVER_HOST'] = host
+      ..['MEETING_SERVER_PORT'] = port.toString();
 
-    status.value = 'กำลังเริ่มเซิร์ฟเวอร์... (uvicorn)';
-    _proc = await Process.start(
-      python,
-      args,
-      workingDirectory: resolvedDir,
-      runInShell: false,
-      mode: ProcessStartMode.detachedWithStdio,
-    );
-    startedByUs = true;
-
-    // Pipe logs
-    _proc!.stdout.transform(utf8.decoder).listen((s) {
-      for (final line in const LineSplitter().convert(s)) {
-        if (line.trim().isEmpty) continue;
-        // ignore: avoid_print
-        print('[server] $line');
+    if (binaryPath != null) {
+      final binaryDir = File(binaryPath).parent.path;
+      status.value = 'กำลังเริ่มเซิร์ฟเวอร์... (${p.basename(binaryPath)})';
+      _proc = await Process.start(
+        binaryPath,
+        const <String>[],
+        workingDirectory: binaryDir,
+        runInShell: false,
+        mode: ProcessStartMode.detachedWithStdio,
+        environment: environment,
+      );
+      startedByUs = true;
+      _attachProcessStreams(_proc!);
+    } else {
+      if (!Directory(resolvedDir).existsSync() ||
+          !File(p.join(resolvedDir, 'main.py')).existsSync()) {
+        final msg =
+            'ไม่พบ server/main.py ที่: $resolvedDir\nโปรดตั้งค่า serverDir ให้เป็น path แบบ absolute ไปยังโฟลเดอร์ server';
+        status.value = msg;
+        throw Exception(msg);
       }
-    });
-    _proc!.stderr.transform(utf8.decoder).listen((s) {
-      for (final line in const LineSplitter().convert(s)) {
-        if (line.trim().isEmpty) continue;
-        // ignore: avoid_print
-        print('[server] $line');
+
+      final python = _findPython(resolvedDir);
+      final args = <String>[
+        '-m',
+        'uvicorn',
+        'main:app',
+        '--host',
+        host,
+        '--port',
+        port.toString(),
+      ];
+      if (useReload) {
+        args.add('--reload'); // dev only
       }
-    });
+
+      status.value = 'กำลังเริ่มเซิร์ฟเวอร์... (uvicorn)';
+      _proc = await Process.start(
+        python,
+        args,
+        workingDirectory: resolvedDir,
+        runInShell: false,
+        mode: ProcessStartMode.detachedWithStdio,
+        environment: environment,
+      );
+      startedByUs = true;
+      _attachProcessStreams(_proc!);
+    }
 
     final sw = Stopwatch()..start();
     var delay = const Duration(milliseconds: 250);
@@ -193,6 +213,88 @@ class ServerSupervisor {
     } catch (_) {
       return false;
     }
+  }
+
+  void _attachProcessStreams(Process proc) {
+    proc.stdout.transform(utf8.decoder).listen((s) {
+      for (final line in const LineSplitter().convert(s)) {
+        if (line.trim().isEmpty) continue;
+        // ignore: avoid_print
+        print('[server] $line');
+      }
+    });
+    proc.stderr.transform(utf8.decoder).listen((s) {
+      for (final line in const LineSplitter().convert(s)) {
+        if (line.trim().isEmpty) continue;
+        // ignore: avoid_print
+        print('[server] $line');
+      }
+    });
+  }
+
+  String? _findBundledBinary(String resolvedServerDir) {
+    String? normalize(String candidate, {String? base}) {
+      if (candidate.isEmpty) return null;
+      if (p.isAbsolute(candidate)) {
+        return p.normalize(candidate);
+      }
+      final prefix = base ?? Directory.current.path;
+      return p.normalize(p.join(prefix, candidate));
+    }
+
+    String? firstExecutable(Iterable<String> candidates) {
+      final seen = <String>{};
+      for (final path in candidates) {
+        if (path.isEmpty) continue;
+        final norm = p.normalize(path);
+        if (!seen.add(norm)) continue;
+        if (_isExecutable(norm)) {
+          return norm;
+        }
+      }
+      return null;
+    }
+
+    final envOverride = Platform.environment['MEETING_APP_SERVER_BINARY'];
+    if (envOverride != null && envOverride.isNotEmpty) {
+      final direct = normalize(envOverride);
+      if (direct != null && _isExecutable(direct)) {
+        return direct;
+      }
+    }
+
+    final candidates = <String>[];
+
+    for (final name in binaryNames) {
+      if (p.isAbsolute(name)) {
+        candidates.add(name);
+      }
+    }
+
+    final searchDirs = <String>{
+      Directory.current.path,
+      if (resolvedServerDir.isNotEmpty) resolvedServerDir,
+      if (resolvedServerDir.isNotEmpty) p.join(resolvedServerDir, 'dist'),
+      if (resolvedServerDir.isNotEmpty) p.join(resolvedServerDir, 'bin'),
+      File(Platform.resolvedExecutable).parent.path,
+    };
+
+    final exeParent = File(Platform.resolvedExecutable).parent.parent;
+    if (exeParent.path.isNotEmpty) {
+      searchDirs.add(exeParent.path);
+    }
+
+    for (final dir in searchDirs) {
+      for (final name in binaryNames) {
+        if (p.isAbsolute(name)) continue;
+        final norm = normalize(name, base: dir);
+        if (norm != null) {
+          candidates.add(norm);
+        }
+      }
+    }
+
+    return firstExecutable(candidates);
   }
 
   Future<void> stop() async {
