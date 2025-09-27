@@ -79,6 +79,7 @@ class ServerSupervisor {
       ..['PORT'] = port.toString()
       ..['MEETING_SERVER_HOST'] = host
       ..['MEETING_SERVER_PORT'] = port.toString();
+    final modelLabel = environmentOverrides['WHISPER_MODEL'] ?? 'ค่าเริ่มต้น';
 
     if (binaryPath != null) {
       final binaryDir = File(binaryPath).parent.path;
@@ -87,8 +88,10 @@ class ServerSupervisor {
         binaryPath,
         const <String>[],
         workingDirectory: binaryDir,
-        runInShell: false,
-        mode: ProcessStartMode.detachedWithStdio,
+        runInShell: Platform.isWindows,
+        mode: Platform.isWindows
+            ? ProcessStartMode.normal
+            : ProcessStartMode.detachedWithStdio,
         environment: environment,
       );
       startedByUs = true;
@@ -121,14 +124,18 @@ class ServerSupervisor {
         python,
         args,
         workingDirectory: resolvedDir,
-        runInShell: false,
-        mode: ProcessStartMode.detachedWithStdio,
+        runInShell: Platform.isWindows,
+        mode: Platform.isWindows
+            ? ProcessStartMode.normal
+            : ProcessStartMode.detachedWithStdio,
         environment: environment,
       );
       startedByUs = true;
       _attachProcessStreams(_proc!);
     }
 
+    status.value =
+        'กำลังโหลดโมเดล $modelLabel... (อาจใช้เวลาหลายนาทีเมื่อเป็นโมเดลใหญ่)';
     final sw = Stopwatch()..start();
     var delay = const Duration(milliseconds: 250);
     var attempt = 0;
