@@ -13,6 +13,7 @@ class ServerSupervisor {
   final bool useReload; // if true -> --reload (dev hot-reload)
   final Dio dio;
   final List<String> binaryNames;
+  final Map<String, String> environmentOverrides;
   // Live status for UI
   final ValueNotifier<String> status =
       ValueNotifier<String>('กำลังตรวจสอบเซิร์ฟเวอร์...');
@@ -28,6 +29,7 @@ class ServerSupervisor {
     this.useReload = false,
     Dio? dio,
     List<String>? binaryNames,
+    Map<String, String>? environmentOverrides,
   })  : dio = dio ??
             Dio(BaseOptions(
               baseUrl: 'http://$host:$port',
@@ -36,7 +38,9 @@ class ServerSupervisor {
             )),
         binaryNames = List.unmodifiable(
           binaryNames ?? _defaultBinaryNames(),
-        );
+        ),
+        environmentOverrides =
+            Map.unmodifiable(environmentOverrides ?? const <String, String>{});
 
   static List<String> _defaultBinaryNames() {
     if (Platform.isWindows) {
@@ -70,6 +74,7 @@ class ServerSupervisor {
 
     final binaryPath = _findBundledBinary(resolvedDir);
     final environment = Map<String, String>.from(Platform.environment)
+      ..addAll(environmentOverrides)
       ..['HOST'] = host
       ..['PORT'] = port.toString()
       ..['MEETING_SERVER_HOST'] = host
