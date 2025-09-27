@@ -23,6 +23,18 @@ class BackendApi {
     print('[API] BASE URL  = ${dio.options.baseUrl}');
   }
 
+  Future<Map<String, dynamic>> fetchHealth() async {
+    final res = await dio.get('/healthz');
+    final data = res.data;
+    if (data is Map<String, dynamic>) {
+      return data;
+    }
+    if (data is Map) {
+      return data.map((key, value) => MapEntry(key.toString(), value));
+    }
+    return <String, dynamic>{};
+  }
+
   Future<FormData> _buildFormData(
     String filePath, {
     String? language,

@@ -4,10 +4,20 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:file_picker/file_picker.dart';
 
 import 'package:meeting_minutes_app/services/api.dart';
+import 'package:meeting_minutes_app/services/transcription_config.dart';
+import 'package:meeting_minutes_app/pages/transcription_config_dialog.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.api});
+  const HomePage({
+    super.key,
+    required this.api,
+    required this.config,
+    required this.onConfigChanged,
+  });
+
   final BackendApi api;
+  final TranscriptionConfig config;
+  final ValueChanged<TranscriptionConfig> onConfigChanged;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -21,6 +31,7 @@ class _HomePageState extends State<HomePage> {
   String? transcript;
   String? report;
   String? pickedPath;
+  bool _showingRestartNotice = false;
 
   // accumulate live transcript
   String liveText = '';
@@ -96,8 +107,14 @@ class _HomePageState extends State<HomePage> {
 
     try {
       await for (final ev in widget.api.transcribeStream(path,
-          language: 'th', modelSize: 'large-v3', quality: 'accurate',
-          preprocess: true, fastPreprocess: false)) {
+          language: widget.config.language,
+          modelSize: widget.config.modelSize,
+          quality: widget.config.quality,
+          initialPrompt: widget.config.initialPrompt.trim().isEmpty
+              ? null
+              : widget.config.initialPrompt,
+          preprocess: widget.config.preprocess,
+          fastPreprocess: widget.config.fastPreprocess)) {
         final event = (ev['event'] as String?) ?? '';
 
         if (event == 'progress') {
@@ -176,12 +193,23 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final liveOrFinal = transcript ?? (liveText.isNotEmpty ? liveText : (partial.isEmpty ? '-' : partial));
     return Scaffold(
-      appBar: AppBar(title: const Text('Meeting Minutes')),
+      appBar: AppBar(
+        title: const Text('Meeting Minutes'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: 'ตั้งค่าการถอดเสียง',
+            onPressed: _openConfigDialog,
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            _buildConfigSummary(context),
+            const SizedBox(height: 12),
             Wrap(
               spacing: 12,
               runSpacing: 8,
@@ -267,6 +295,128 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _openConfigDialog() async {
+    if (loading) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('ยืนยันการปรับแต่ง'),
+          content: const Text(
+              'ขณะนี้กำลังประมวลผลอยู่ หากเปลี่ยนการตั้งค่าแอปจะรีสตาร์ทและหยุดงานที่กำลังทำอยู่ ต้องการดำเนินการต่อหรือไม่?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('ยกเลิก'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('ดำเนินการต่อ'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) {
+        return;
+      }
+    }
+
+    final result = await showDialog<TranscriptionConfig>(
+      context: context,
+      builder: (context) => TranscriptionConfigDialog(
+        initialConfig: widget.config,
+      ),
+    );
+    if (result != null) {
+      if (!_showingRestartNotice && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('กำลังรีสตาร์ทแอปเพื่อโหลดโมเดลใหม่...'),
+          ),
+        );
+        setState(() {
+          _showingRestartNotice = true;
+        });
+      }
+      widget.onConfigChanged(result);
+    }
+  }
+
+  Widget _buildConfigSummary(BuildContext context) {
+    final config = widget.config;
+    final theme = Theme.of(context);
+    final preprocessLabel = !config.preprocess
+        ? 'Preprocess: ปิด'
+        : config.fastPreprocess
+            ? 'Preprocess: เร็ว'
+            : 'Preprocess: คุณภาพสูง';
+    final children = <Widget>[
+      _buildSummaryChip(Icons.memory, 'โมเดล: ${config.modelSize}'),
+      _buildSummaryChip(Icons.language, 'ภาษา: ${config.language}'),
+      _buildSummaryChip(Icons.speed, 'โหมด: ${config.quality}'),
+      _buildSummaryChip(Icons.tune, preprocessLabel),
+    ];
+
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.settings, size: 18),
+                const SizedBox(width: 6),
+                const Text(
+                  'การตั้งค่าการถอดเสียง',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _openConfigDialog,
+                  icon: const Icon(Icons.tune),
+                  label: const Text('ปรับแต่ง'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: children,
+            ),
+            if (config.initialPrompt.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Initial prompt:',
+                style: theme.textTheme.labelLarge,
+              ),
+              Text(
+                config.initialPrompt.trim(),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              'เมื่อมีการปรับแต่ง แอปจะรีสตาร์ทอัตโนมัติเพื่อโหลดโมเดลใหม่.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryChip(IconData icon, String label) {
+    return Chip(
+      avatar: Icon(icon, size: 16),
+      label: Text(label),
     );
   }
 }

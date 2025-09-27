@@ -13,6 +13,7 @@ class ServerSupervisor {
   final bool useReload; // if true -> --reload (dev hot-reload)
   final Dio dio;
   final List<String> binaryNames;
+  final Map<String, String> environmentOverrides;
   // Live status for UI
   final ValueNotifier<String> status =
       ValueNotifier<String>('กำลังตรวจสอบเซิร์ฟเวอร์...');
@@ -28,6 +29,7 @@ class ServerSupervisor {
     this.useReload = false,
     Dio? dio,
     List<String>? binaryNames,
+    Map<String, String>? environmentOverrides,
   })  : dio = dio ??
             Dio(BaseOptions(
               baseUrl: 'http://$host:$port',
@@ -36,7 +38,9 @@ class ServerSupervisor {
             )),
         binaryNames = List.unmodifiable(
           binaryNames ?? _defaultBinaryNames(),
-        );
+        ),
+        environmentOverrides =
+            Map.unmodifiable(environmentOverrides ?? const <String, String>{});
 
   static List<String> _defaultBinaryNames() {
     if (Platform.isWindows) {
@@ -70,10 +74,12 @@ class ServerSupervisor {
 
     final binaryPath = _findBundledBinary(resolvedDir);
     final environment = Map<String, String>.from(Platform.environment)
+      ..addAll(environmentOverrides)
       ..['HOST'] = host
       ..['PORT'] = port.toString()
       ..['MEETING_SERVER_HOST'] = host
       ..['MEETING_SERVER_PORT'] = port.toString();
+    final modelLabel = environmentOverrides['WHISPER_MODEL'] ?? 'ค่าเริ่มต้น';
 
     if (binaryPath != null) {
       final binaryDir = File(binaryPath).parent.path;
@@ -82,8 +88,10 @@ class ServerSupervisor {
         binaryPath,
         const <String>[],
         workingDirectory: binaryDir,
-        runInShell: false,
-        mode: ProcessStartMode.detachedWithStdio,
+        runInShell: Platform.isWindows,
+        mode: Platform.isWindows
+            ? ProcessStartMode.normal
+            : ProcessStartMode.detachedWithStdio,
         environment: environment,
       );
       startedByUs = true;
@@ -116,14 +124,18 @@ class ServerSupervisor {
         python,
         args,
         workingDirectory: resolvedDir,
-        runInShell: false,
-        mode: ProcessStartMode.detachedWithStdio,
+        runInShell: Platform.isWindows,
+        mode: Platform.isWindows
+            ? ProcessStartMode.normal
+            : ProcessStartMode.detachedWithStdio,
         environment: environment,
       );
       startedByUs = true;
       _attachProcessStreams(_proc!);
     }
 
+    status.value =
+        'กำลังโหลดโมเดล $modelLabel... (อาจใช้เวลาหลายนาทีเมื่อเป็นโมเดลใหญ่)';
     final sw = Stopwatch()..start();
     var delay = const Duration(milliseconds: 250);
     var attempt = 0;
