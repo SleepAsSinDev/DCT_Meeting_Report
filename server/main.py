@@ -1,6 +1,6 @@
 import os, json as _json, tempfile as _tf, threading, subprocess
 from typing import Dict, Optional
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -302,6 +302,89 @@ async def transcribe_stream(
             if wav_path != tmp_path:
                 try: os.remove(wav_path)
                 except Exception: pass
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+@app.post("/transcribe_stream_upload")
+async def transcribe_stream_upload(
+    request: Request,
+    language: str = Query(LANGUAGE_DEFAULT),
+    model_size: str = Query(MODEL_SIZE_DEFAULT),
+    quality: str = Query(QUALITY_DEFAULT),
+    initial_prompt: Optional[str] = Query(None),
+    preprocess: bool = Query(False),
+    fast_preprocess: bool = Query(False),
+):
+    model_size = _normalize_model_name(model_size)
+    language = _normalize_language(language)
+    params = _choose_params(quality)
+    model = _get_model(model_size)
+
+    with _tf.NamedTemporaryFile(delete=False, suffix=".bin") as tmp:
+        tmp_path = tmp.name
+
+    with open(tmp_path, "wb") as f:
+        async for chunk in request.stream():
+            if chunk:
+                f.write(chunk)
+
+    wav_path = _maybe_preprocess(tmp_path, preprocess, quick=fast_preprocess)
+
+    def gen():
+        try:
+            yield (
+                _json.dumps({"event": "progress", "progress": 0.0, "partial_text": ""})
+                + "\n"
+            ).encode("utf-8")
+            segments_gen, info = model.transcribe(
+                wav_path,
+                language=None if language == "auto" else language,
+                initial_prompt=initial_prompt,
+                **params,
+            )
+            collected = []
+            duration = float(getattr(info, "duration", 0.0) or 0.0)
+            for seg in segments_gen:
+                collected.append(seg.text)
+                progress = (seg.end / duration * 100.0) if duration > 0 else 0.0
+                yield (
+                    _json.dumps(
+                        {
+                            "event": "progress",
+                            "progress": round(progress, 2),
+                            "partial_text": seg.text,
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            yield (
+                _json.dumps(
+                    {
+                        "event": "done",
+                        "text": " ".join(collected).strip(),
+                        "language": getattr(info, "language", "auto"),
+                        "duration_sec": duration,
+                        "model": f"faster-whisper-{model_size}({COMPUTE_TYPE})",
+                        "quality": _normalize_quality(quality),
+                        "cpu_threads": CPU_THREADS_DEFAULT,
+                        "num_workers": NUM_WORKERS_DEFAULT,
+                        "preprocess": preprocess,
+                        "fast_preprocess": fast_preprocess,
+                    }
+                )
+                + "\n"
+            ).encode("utf-8")
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            if wav_path != tmp_path:
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 

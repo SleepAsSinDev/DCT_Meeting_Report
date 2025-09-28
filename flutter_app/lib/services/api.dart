@@ -123,6 +123,45 @@ class BackendApi {
     }
   }
 
+  Stream<Map<String, dynamic>> transcribeStreamUpload(
+    String filePath, {
+    String? language,
+    String? modelSize,
+    String? quality,
+    String? initialPrompt,
+    bool? preprocess,
+    bool? fastPreprocess,
+    void Function(int sent, int total)? onSendProgress,
+  }) async* {
+    final qs = {
+      'language': language ?? defaultLanguage,
+      'model_size': modelSize ?? defaultModelSize,
+      'quality': quality ?? defaultQuality,
+      if (initialPrompt != null && initialPrompt.isNotEmpty) 'initial_prompt': initialPrompt,
+      if (preprocess != null) 'preprocess': preprocess.toString(),
+      if (fastPreprocess != null) 'fast_preprocess': fastPreprocess.toString(),
+    };
+    final uri = Uri(path: '/transcribe_stream_upload', queryParameters: qs);
+    final stream = File(filePath).openRead();
+    final res = await dio.postUri(
+      uri,
+      data: stream,
+      options: Options(
+        headers: {'Content-Type': 'application/octet-stream'},
+        responseType: ResponseType.stream,
+        receiveTimeout: const Duration(hours: 6),
+        sendTimeout: const Duration(hours: 6),
+      ),
+      onSendProgress: onSendProgress,
+    );
+    final body = res.data as ResponseBody;
+    final lines = body.stream.map((chunk) => utf8.decode(chunk)).transform(const LineSplitter());
+    await for (final line in lines) {
+      if (line.trim().isEmpty) continue;
+      yield jsonDecode(line);
+    }
+  }
+
   Future<String> summarize(String transcript,
       {String style = "thai-formal", List<String>? sections}) async {
     final res = await dio.post('/summarize', data: {
