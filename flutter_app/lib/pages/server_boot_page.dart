@@ -28,12 +28,15 @@ class _ServerBootPageState extends State<ServerBootPage> {
     });
     try {
       await widget.supervisor.ensureStarted();
+      if (!mounted) return;
       widget.onReady();
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         errorText = e.toString();
       });
     } finally {
+      if (!mounted) return;
       setState(() {
         _starting = false;
       });
