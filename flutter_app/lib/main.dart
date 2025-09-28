@@ -3,11 +3,6 @@ import 'package:meeting_minutes_app/services/api.dart';
 import 'package:meeting_minutes_app/services/server_supervisor.dart';
 
 import 'package:meeting_minutes_app/services/transcription_config.dart';
-
-
-
-import 'package:meeting_minutes_app/pages/server_boot_page.dart';
-
 import 'package:meeting_minutes_app/pages/home_page.dart';
 import 'package:meeting_minutes_app/pages/model_loading_page.dart';
 import 'package:meeting_minutes_app/pages/server_boot_page.dart';
@@ -30,68 +25,16 @@ class _MyAppState extends State<MyApp> {
   bool _modelReady = false;
   int _restartToken = 0;
   int _modelToken = 0;
-
-
-  int _restartToken = 0;
-
-
   TranscriptionConfig _config = const TranscriptionConfig();
 
   @override
   void initState() {
     super.initState();
     _recreateServices();
-
   }
 
   void _onServerReady() {
     setState(() {
-      _ready = true;
-      _modelToken += 1;
-    });
-  }
-
-  Future<void> _recreateServices([TranscriptionConfig? newConfig]) async {
-    final config = newConfig ?? _config;
-    if (_supervisor != null) {
-      await _supervisor!.stop();
-    }
-
-    final supervisor = ServerSupervisor(
-      host: '127.0.0.1',
-      port: 8000,
-      serverDir: 'server',
-      startTimeout: const Duration(seconds: 120),
-      useReload: false,
-      environmentOverrides: config.toServerEnvironment(),
-    );
-    supervisor.status.value =
-        'เตรียมเซิร์ฟเวอร์สำหรับโมเดล ${config.modelSize}...';
-    final api = BackendApi(
-      'http://127.0.0.1:8000',
-      defaultModelSize: config.modelSize,
-      defaultLanguage: config.language,
-      defaultQuality: config.quality,
-    );
-
-    setState(() {
-      _config = config;
-      _ready = false;
-      _modelReady = false;
-      _restartToken += 1;
-      _modelToken += 1;
-      _supervisor = supervisor;
-      _api = api;
-    });
-
-  }
-
-  void _onModelReady() {
-    if (!mounted) return;
-    setState(() {
-
-      _modelReady = true;
-
       _ready = true;
       _modelToken += 1;
     });
@@ -127,43 +70,16 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
+  Future<void> _handleConfigChanged(TranscriptionConfig config) async {
+    if (config == _config) return;
+    await _recreateServices(config);
+  }
 
   void _onModelReady() {
     if (!mounted) return;
     setState(() {
       _modelReady = true;
-
-  Future<void> _recreateServices([TranscriptionConfig? newConfig]) async {
-    final config = newConfig ?? _config;
-    if (_supervisor != null) {
-      await _supervisor!.stop();
-    }
-    setState(() {
-      _config = config;
-      _ready = false;
-      _restartToken += 1;
-      _supervisor = ServerSupervisor(
-        host: '127.0.0.1',
-        port: 8000,
-        serverDir: 'server',
-        startTimeout: const Duration(seconds: 120),
-        useReload: false,
-        environmentOverrides: config.toServerEnvironment(),
-      );
-      _api = BackendApi(
-        'http://127.0.0.1:8000',
-        defaultModelSize: config.modelSize,
-        defaultLanguage: config.language,
-        defaultQuality: config.quality,
-      );
-
-
     });
-  }
-
-  Future<void> _handleConfigChanged(TranscriptionConfig config) async {
-    if (config == _config) return;
-    await _recreateServices(config);
   }
 
   @override
@@ -214,44 +130,6 @@ class _MyAppState extends State<MyApp> {
       title: 'Meeting Minutes App',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
       home: homeWidget,
-
-    return MaterialApp(
-      title: 'Meeting Minutes App',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
-
-      home: !_ready
-          ? ServerBootPage(
-              key: ValueKey('boot$_restartToken'),
-              supervisor: supervisor,
-              onReady: _onServerReady,
-            )
-          : !_modelReady
-              ? ModelLoadingPage(
-                  key: ValueKey('model$_modelToken'),
-                  api: api,
-                  config: _config,
-                  onReady: _onModelReady,
-                )
-              : HomePage(
-                  key: ValueKey('home$_restartToken'),
-                  api: api,
-                  config: _config,
-                  onConfigChanged: _handleConfigChanged,
-                ),
-
-      home: _ready
-          ? HomePage(
-              key: ValueKey('home$_restartToken'),
-              api: api,
-              config: _config,
-              onConfigChanged: _handleConfigChanged,
-            )
-          : ServerBootPage(
-              key: ValueKey('boot$_restartToken'),
-              supervisor: supervisor,
-              onReady: _onServerReady,
-            ),
-
     );
   }
 }
