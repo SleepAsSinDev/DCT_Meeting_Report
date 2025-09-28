@@ -105,7 +105,7 @@ class ServerSupervisor {
         throw Exception(msg);
       }
 
-      final python = _findPython(resolvedDir);
+      final python = await _preparePython(resolvedDir);
       final args = <String>[
         '-m',
         'uvicorn',
@@ -211,6 +211,117 @@ class ServerSupervisor {
       if (_isExecutable(c)) return c;
     }
     return Platform.isWindows ? 'python.exe' : 'python3';
+  }
+
+  Future<String> _preparePython(String resolvedServerDir) async {
+    final requirementsPath = p.join(resolvedServerDir, 'requirements.txt');
+    final requirementsFile = File(requirementsPath);
+    final venvDir = p.join(resolvedServerDir, '.venv');
+    final venvPython = Platform.isWindows
+        ? p.join(venvDir, 'Scripts', 'python.exe')
+        : p.join(venvDir, 'bin', 'python');
+
+    final systemPython = _findPython(resolvedServerDir);
+    var pythonExecutable = systemPython;
+
+    if (!requirementsFile.existsSync()) {
+      return pythonExecutable;
+    }
+
+    try {
+      if (!File(venvPython).existsSync()) {
+        status.value = 'กำลังตั้งค่า virtualenv สำหรับเซิร์ฟเวอร์...';
+        await _runProcess(
+          systemPython,
+          ['-m', 'venv', venvDir],
+          workingDirectory: resolvedServerDir,
+        );
+      }
+
+      if (File(venvPython).existsSync()) {
+        pythonExecutable = venvPython;
+        final stampFile = File(p.join(venvDir, '.requirements.stamp'));
+        final requirementsContent = await requirementsFile.readAsString();
+        final previousStamp =
+            stampFile.existsSync() ? await stampFile.readAsString() : '';
+        if (previousStamp != requirementsContent) {
+          status.value = 'กำลังติดตั้งไลบรารีเซิร์ฟเวอร์...';
+          await _runProcess(
+            pythonExecutable,
+            ['-m', 'pip', 'install', '--upgrade', 'pip'],
+            workingDirectory: resolvedServerDir,
+          );
+          await _runProcess(
+            pythonExecutable,
+            ['-m', 'pip', 'install', '-r', 'requirements.txt'],
+            workingDirectory: resolvedServerDir,
+          );
+          await stampFile.writeAsString(requirementsContent);
+        }
+        return pythonExecutable;
+      }
+    } catch (error, stackTrace) {
+      status.value =
+          'เตือน: เตรียม virtualenv ไม่สำเร็จ กำลังลองใช้ Python ระบบที่มีอยู่';
+      _logBootstrapError(error, stackTrace);
+      try {
+        status.value =
+            'กำลังติดตั้งไลบรารีเซิร์ฟเวอร์ด้วย Python ระบบ (โหมด --user)...';
+        await _runProcess(
+          systemPython,
+          ['-m', 'pip', 'install', '--user', '-r', requirementsPath],
+          workingDirectory: resolvedServerDir,
+        );
+      } catch (nestedError, nestedStack) {
+        status.value =
+            'เตือน: ติดตั้งไลบรารีอัตโนมัติไม่สำเร็จ โปรดติดตั้งด้วยตนเอง';
+        _logBootstrapError(nestedError, nestedStack);
+      }
+    }
+
+    return pythonExecutable;
+  }
+
+  Future<void> _runProcess(
+    String executable,
+    List<String> arguments, {
+    required String workingDirectory,
+  }) async {
+    final result = await Process.run(
+      executable,
+      arguments,
+      workingDirectory: workingDirectory,
+      runInShell: Platform.isWindows,
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+
+    if (result.stdout is String) {
+      _logBootstrapOutput(result.stdout as String);
+    }
+    if (result.stderr is String) {
+      _logBootstrapOutput(result.stderr as String);
+    }
+
+    if (result.exitCode != 0) {
+      throw ProcessException(executable, arguments, result.stderr, result.exitCode);
+    }
+  }
+
+  void _logBootstrapOutput(String output) {
+    for (final line in const LineSplitter().convert(output)) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      // ignore: avoid_print
+      print('[server][bootstrap] $trimmed');
+    }
+  }
+
+  void _logBootstrapError(Object error, StackTrace stackTrace) {
+    // ignore: avoid_print
+    print('[server][bootstrap][error] $error');
+    // ignore: avoid_print
+    print('[server][bootstrap][error] $stackTrace');
   }
 
   bool _isExecutable(String cmd) {
