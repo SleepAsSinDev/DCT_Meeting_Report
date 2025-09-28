@@ -83,6 +83,8 @@ class _HomePageState extends State<HomePage> {
       type: FileType.any,
     );
 
+    if (!mounted) return;
+
     if (result == null || (result.files.isEmpty)) {
       setState(() {
         loading = false;
@@ -93,6 +95,7 @@ class _HomePageState extends State<HomePage> {
 
     final path = result.files.single.path;
     if (path == null) {
+      if (!mounted) return;
       setState(() {
         loading = false;
         status = 'ไม่พบพาธไฟล์';
@@ -101,6 +104,7 @@ class _HomePageState extends State<HomePage> {
     }
     pickedPath = path;
 
+    if (!mounted) return;
     setState(() {
       status = 'กำลังถอดเสียง (มีอัปเดตความคืบหน้า)';
     });
@@ -120,6 +124,7 @@ class _HomePageState extends State<HomePage> {
         if (event == 'progress') {
           final p = (ev['progress'] as num?)?.toDouble() ?? 0.0;
           final piece = ((ev['partial_text'] as String?) ?? '').trim();
+          if (!mounted) break;
           setState(() {
             progress = p.clamp(0, 100);
             partial = piece;
@@ -131,6 +136,7 @@ class _HomePageState extends State<HomePage> {
           _scrollTranscriptToEnd();
         } else if (event == 'done') {
           final text = ((ev['text'] as String?) ?? '').trim();
+          if (!mounted) break;
           setState(() {
             transcript = text.isNotEmpty ? text : liveText;
             progress = 100;
@@ -142,6 +148,7 @@ class _HomePageState extends State<HomePage> {
         }
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         loading = false;
         status = 'เกิดข้อผิดพลาด: $e';
@@ -152,6 +159,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> makeReport() async {
     final source = transcript ?? liveText;
     if (source.isEmpty) {
+      if (!mounted) return;
       setState(() {
         status = 'ยังไม่มีข้อความถอดเสียง';
       });
@@ -170,12 +178,14 @@ class _HomePageState extends State<HomePage> {
         'Action items (ผู้รับผิดชอบ/กำหนดเสร็จ)',
         'คำถามค้าง/ติดขัด',
       ]);
+      if (!mounted) return;
       setState(() {
         report = md;
         loading = false;
         status = 'เสร็จแล้ว';
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         loading = false;
         status = 'เกิดข้อผิดพลาด: $e';
