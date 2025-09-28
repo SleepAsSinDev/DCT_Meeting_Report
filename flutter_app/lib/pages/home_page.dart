@@ -106,11 +106,11 @@ class _HomePageState extends State<HomePage> {
 
     if (!mounted) return;
     setState(() {
-      status = 'กำลังถอดเสียง (มีอัปเดตความคืบหน้า)';
+      status = 'กำลังอัปโหลด...';
     });
 
     try {
-      await for (final ev in widget.api.transcribeStream(path,
+      await for (final ev in widget.api.transcribeStreamUpload(path,
           language: widget.config.language,
           modelSize: widget.config.modelSize,
           quality: widget.config.quality,
@@ -118,7 +118,16 @@ class _HomePageState extends State<HomePage> {
               ? null
               : widget.config.initialPrompt,
           preprocess: widget.config.preprocess,
-          fastPreprocess: widget.config.fastPreprocess)) {
+          fastPreprocess: widget.config.fastPreprocess,
+          onSendProgress: (sent, total) {
+            if (!mounted) {
+              return;
+            }
+            final percent = total > 0 ? (sent / total * 100.0) : 0.0;
+            setState(() {
+              status = 'กำลังอัปโหลด... ${percent.toStringAsFixed(1)}%';
+            });
+          })) {
         final event = (ev['event'] as String?) ?? '';
 
         if (event == 'progress') {
@@ -126,6 +135,7 @@ class _HomePageState extends State<HomePage> {
           final piece = ((ev['partial_text'] as String?) ?? '').trim();
           if (!mounted) break;
           setState(() {
+            status = 'กำลังถอดเสียง (มีอัปเดตความคืบหน้า)';
             progress = p.clamp(0, 100);
             partial = piece;
             if (piece.isNotEmpty && piece != lastPiece) {
