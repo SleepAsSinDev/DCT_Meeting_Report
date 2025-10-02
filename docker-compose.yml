@@ -1,0 +1,24 @@
+services:
+  meeting-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: meeting-minutes-server:latest
+    ports:
+      - "8000:8000"
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER_LANG: ${WHISPER_LANG:-th}
+      WHISPER_QUALITY: ${WHISPER_QUALITY:-accurate}
+      WHISPER_COMPUTE: ${WHISPER_COMPUTE:-int8}
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-4}
+      WHISPER_NUM_WORKERS: ${WHISPER_NUM_WORKERS:-1}
+      MEETING_SERVER_FFMPEG: ${MEETING_SERVER_FFMPEG:-ffmpeg}
+      HOST: 0.0.0.0
+      PORT: 8000
+    volumes:
+      - whisper-cache:/root/.cache/huggingface
+    restart: unless-stopped
+volumes:
+  whisper-cache:
+    driver: local
