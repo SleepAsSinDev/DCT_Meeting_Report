@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 from faster_whisper import WhisperModel
 
-_MODEL_SIZE_ENV = os.getenv("WHISPER_MODEL", "large-v3")
+_MODEL_SIZE_ENV = os.getenv("WHISPER_MODEL")
 
 # Allow overriding host/port/ffmpeg via env without relying on CLI arguments.
 HOST_DEFAULT = (
