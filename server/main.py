@@ -1,11 +1,11 @@
-import os, json as _json, tempfile as _tf, threading, subprocess, asyncio, time
+import os, json as _json, tempfile as _tf, threading, subprocess, asyncio, time, io
 from collections import deque
 from itertools import count
 from typing import Dict, List, Optional
-from fastapi import FastAPI, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, UploadFile, File, Form, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, Response
 from faster_whisper import WhisperModel
 
 try:
@@ -17,6 +17,11 @@ try:
     import torch as _torch
 except ImportError:
     _torch = None
+
+try:
+    from docx import Document as _DocxDocument
+except ImportError:
+    _DocxDocument = None
 
 _MODEL_SIZE_ENV = os.getenv("WHISPER_MODEL")
 
@@ -180,6 +185,45 @@ class _JobQueue:
 
 _JOB_QUEUE = _JobQueue(TRANSCRIBE_CONCURRENCY)
 
+
+def _build_export_payload(req: ExportRequest):
+    fmt = (req.format or "txt").strip().lower()
+    include_transcript = req.include_transcript and (req.transcript or "").strip()
+    include_report = req.include_report and (req.report_markdown or "").strip()
+    if not include_transcript and not include_report:
+        raise ValueError("ไม่พบข้อมูลที่จะส่งออก โปรดเลือกเนื้อหาอย่างน้อยหนึ่งรายการ")
+
+    sections = []
+    if include_transcript:
+        sections.append(("Transcript", (req.transcript or "").strip()))
+    if include_report:
+        sections.append(("Report", (req.report_markdown or "").strip()))
+
+    if fmt in ("txt", "text"):
+        lines = []
+        for title, content in sections:
+            lines.append(f"## {title}")
+            lines.append(content)
+            lines.append("")
+        data = "\n".join(lines).strip() + "\n"
+        return data.encode("utf-8"), "text/plain; charset=utf-8", "meeting_export.txt"
+
+    if fmt in ("docx", "docs"):
+        if _DocxDocument is None:
+            raise RuntimeError(
+                "python-docx ไม่พร้อมใช้งานบนเซิร์ฟเวอร์ โปรดใช้รูปแบบ .txt แทน"
+            )
+        doc = _DocxDocument()
+        for title, content in sections:
+            doc.add_heading(title, level=1)
+            for paragraph in content.splitlines():
+                doc.add_paragraph(paragraph if paragraph.strip() else "")
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        return buffer.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "meeting_export.docx"
+
+    raise ValueError(f"ไม่รองรับรูปแบบไฟล์: {req.format}")
+
 def _normalize_model_name(name: Optional[str]) -> str:
     if not name:
         return MODEL_SIZE_DEFAULT
@@ -237,6 +281,14 @@ class Segment(BaseModel):
     end: float
     text: str
     speaker: Optional[str] = None
+
+
+class ExportRequest(BaseModel):
+    transcript: Optional[str] = ""
+    report_markdown: Optional[str] = ""
+    include_transcript: bool = True
+    include_report: bool = False
+    format: str = "txt"
 
 def _choose_params(quality: str):
     q = _normalize_quality(quality)
@@ -749,6 +801,19 @@ async def transcribe_stream_upload(
                     pass
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+@app.post("/export")
+async def export(payload: ExportRequest):
+    try:
+        data, media_type, filename = _build_export_payload(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=data, media_type=media_type, headers=headers)
+
 
 @app.post("/summarize")
 async def summarize(req: Request):

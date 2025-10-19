@@ -37,6 +37,20 @@ python main.py
 - เมื่อจำนวนคำขอเกินกว่าค่า concurrency จะถูกพักคิวและเมื่อถึงคิวแล้ว response จะมีข้อมูล `queue.job_id`, `wait_seconds`, `position_on_enqueue`
 - ใน endpoint แบบสตรีม ฝั่ง client จะได้รับอีเวนต์ `event: queued` แสดงลำดับคิวก่อนเข้าสู่การประมวลผล
 
+### ส่งออกไฟล์
+- Endpoint `POST /export` รองรับพารามิเตอร์:
+  ```json
+  {
+    "format": "txt" หรือ "docx",
+    "transcript": "...",
+    "report_markdown": "...",
+    "include_transcript": true,
+    "include_report": false
+  }
+  ```
+- สำหรับ `.docx` ต้องติดตั้ง `python-docx` (มีใน `requirements.txt` แล้ว)
+- ตอบกลับเป็นไฟล์พร้อม header `Content-Disposition` เพื่อให้ฝั่ง client ดาวน์โหลดได้
+
 ### Reverse proxy ด้วย Nginx
 - ให้ uvicorn ทำงานภายในเครื่อง: `uvicorn main:app --host 127.0.0.1 --port 8001 --proxy-headers --forwarded-allow-ips='*'`
 - นำ `nginx.conf.example` ไปใช้เป็นต้นแบบ (copy ไป `/etc/nginx/sites-available/meeting_minutes` แล้วแก้ `server_name` และ path ของ cert/key)

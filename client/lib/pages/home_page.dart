@@ -1,23 +1,19 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:file_picker/file_picker.dart';
 
 import 'package:meeting_minutes_app/services/api.dart';
-import 'package:meeting_minutes_app/services/transcription_config.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
     required this.api,
-    required this.config,
-    required this.onConfigChanged,
     this.connectionError,
   });
 
   final BackendApi api;
-  final TranscriptionConfig config;
-  final ValueChanged<TranscriptionConfig> onConfigChanged;
   final String? connectionError;
 
   @override
@@ -32,7 +28,6 @@ class _HomePageState extends State<HomePage> {
   String? transcript;
   String? report;
   String? pickedPath;
-  bool _showingRestartNotice = false;
   List<Map<String, dynamic>>? _segments;
   List<String> _speakers = const [];
   Map<String, dynamic>? _diarizationInfo;
@@ -120,15 +115,7 @@ class _HomePageState extends State<HomePage> {
 
     try {
       await for (final ev in widget.api.transcribeStreamUpload(path,
-          language: widget.config.language,
-          modelSize: widget.config.modelSize,
-          quality: widget.config.quality,
-          initialPrompt: widget.config.initialPrompt.trim().isEmpty
-              ? null
-              : widget.config.initialPrompt,
-          preprocess: widget.config.preprocess,
-          fastPreprocess: widget.config.fastPreprocess,
-          diarize: widget.config.diarize, onSendProgress: (sent, total) {
+          onSendProgress: (sent, total) {
         if (!mounted) {
           return;
         }
@@ -256,6 +243,85 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _exportData() async {
+    final transcriptText = _normalizedTranscriptForExport();
+    final reportText = (report ?? '').trim();
+    final hasTranscript = transcriptText.isNotEmpty;
+    final hasReport = reportText.isNotEmpty;
+
+    if (!hasTranscript && !hasReport) {
+      if (!mounted) return;
+      setState(() {
+        status = 'ยังไม่มีข้อมูลให้ส่งออก';
+      });
+      return;
+    }
+
+    final selection = await _showExportOptionsDialog(
+      hasTranscript: hasTranscript,
+      hasReport: hasReport,
+    );
+    if (selection == null) {
+      if (!mounted) return;
+      setState(() {
+        status = 'ยกเลิกการส่งออก';
+      });
+      return;
+    }
+
+    setState(() {
+      loading = true;
+      status = 'กำลังส่งออกไฟล์...';
+    });
+
+    try {
+      final bytes = await widget.api.exportData(
+        format: selection.format == _ExportFormat.txt ? 'txt' : 'docx',
+        includeTranscript: selection.includeTranscript,
+        includeReport: selection.includeReport,
+        transcript: selection.includeTranscript ? transcriptText : '',
+        report: selection.includeReport ? reportText : '',
+      );
+
+      final suggestedName = selection.format == _ExportFormat.txt
+          ? 'meeting_export.txt'
+          : 'meeting_export.docx';
+
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: 'บันทึกไฟล์ส่งออก',
+        fileName: suggestedName,
+        type: FileType.custom,
+        allowedExtensions: selection.format == _ExportFormat.txt
+            ? const ['txt']
+            : const ['docx'],
+      );
+
+      if (savePath == null) {
+        if (!mounted) return;
+        setState(() {
+          loading = false;
+          status = 'ยกเลิกการบันทึกไฟล์';
+        });
+        return;
+      }
+
+      final file = File(savePath);
+      await file.writeAsBytes(bytes, flush: true);
+
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        status = 'บันทึกไฟล์สำเร็จ: $savePath';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        status = 'ส่งออกไม่สำเร็จ: $e';
+      });
+    }
+  }
+
   @override
   void dispose() {
     _transcriptScroll.dispose();
@@ -273,21 +339,12 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Meeting Minutes'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.tune),
-            tooltip: 'ตั้งค่าการถอดเสียง',
-            onPressed: _openConfigDialog,
-          ),
-        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildConfigSummary(context),
-            const SizedBox(height: 12),
             Wrap(
               spacing: 12,
               runSpacing: 8,
@@ -299,6 +356,10 @@ class _HomePageState extends State<HomePage> {
                 ElevatedButton(
                   onPressed: (loading || !hasTranscript) ? null : makeReport,
                   child: const Text('สร้างรายงาน'),
+                ),
+                ElevatedButton(
+                  onPressed: (loading || !_canExport()) ? null : _exportData,
+                  child: const Text('ส่งออกไฟล์'),
                 ),
               ],
             ),
@@ -433,52 +494,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _openConfigDialog() async {
-    if (loading) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('ยืนยันการปรับแต่ง'),
-          content: const Text(
-              'ขณะนี้กำลังประมวลผลอยู่ หากเปลี่ยนการตั้งค่าแอปจะรีสตาร์ทและหยุดงานที่กำลังทำอยู่ ต้องการดำเนินการต่อหรือไม่?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('ยกเลิก'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('ดำเนินการต่อ'),
-            ),
-          ],
-        ),
-      );
-      if (confirm != true) {
-        return;
-      }
-    }
-
-    final result = await showDialog<TranscriptionConfig>(
-      context: context,
-      builder: (context) => TranscriptionConfigDialog(
-        initialConfig: widget.config,
-      ),
-    );
-    if (result != null) {
-      if (!_showingRestartNotice && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('กำลังรีสตาร์ทแอปเพื่อโหลดโมเดลใหม่...'),
-          ),
-        );
-        setState(() {
-          _showingRestartNotice = true;
-        });
-      }
-      widget.onConfigChanged(result);
-    }
-  }
-
   List<Map<String, dynamic>> _parseMapList(dynamic raw) {
     if (raw is! List) return <Map<String, dynamic>>[];
     final output = <Map<String, dynamic>>[];
@@ -551,6 +566,19 @@ class _HomePageState extends State<HomePage> {
     return false;
   }
 
+  bool _canExport() {
+    return _normalizedTranscriptForExport().isNotEmpty ||
+        (report ?? '').trim().isNotEmpty;
+  }
+
+  String _normalizedTranscriptForExport() {
+    final display = _renderTranscriptText().trim();
+    if (display == '-' || display.isEmpty) {
+      return liveText.trim();
+    }
+    return display;
+  }
+
   String _buildReportSource() {
     final segs = _segments;
     if (segs != null && segs.isNotEmpty) {
@@ -571,81 +599,121 @@ class _HomePageState extends State<HomePage> {
     return liveText.trim();
   }
 
-  Widget _buildConfigSummary(BuildContext context) {
-    final config = widget.config;
-    final theme = Theme.of(context);
-    final preprocessLabel = !config.preprocess
-        ? 'Preprocess: ปิด'
-        : config.fastPreprocess
-            ? 'Preprocess: เร็ว'
-            : 'Preprocess: คุณภาพสูง';
-    final children = <Widget>[
-      _buildSummaryChip(Icons.memory, 'โมเดล: ${config.modelSize}'),
-      _buildSummaryChip(Icons.language, 'ภาษา: ${config.language}'),
-      _buildSummaryChip(Icons.speed, 'โหมด: ${config.quality}'),
-      _buildSummaryChip(Icons.tune, preprocessLabel),
-      _buildSummaryChip(Icons.record_voice_over,
-          'ระบุผู้พูด: ${config.diarize ? 'เปิด' : 'ปิด'}'),
-    ];
+  Future<_ExportOptions?> _showExportOptionsDialog({
+    required bool hasTranscript,
+    required bool hasReport,
+  }) {
+    _ExportFormat selectedFormat = _ExportFormat.txt;
+    bool includeTranscript = hasTranscript;
+    bool includeReport = hasReport && !hasTranscript ? true : hasReport;
+    String? error;
 
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.settings, size: 18),
-                const SizedBox(width: 6),
-                const Text(
-                  'การตั้งค่าการถอดเสียง',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+    return showDialog<_ExportOptions>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('ส่งออกไฟล์'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    RadioListTile<_ExportFormat>(
+                      title: const Text('ไฟล์ข้อความ (.txt)'),
+                      value: _ExportFormat.txt,
+                      groupValue: selectedFormat,
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setStateDialog(() => selectedFormat = value);
+                      },
+                    ),
+                    RadioListTile<_ExportFormat>(
+                      title: const Text('เอกสาร (.docx)'),
+                      value: _ExportFormat.docx,
+                      groupValue: selectedFormat,
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setStateDialog(() => selectedFormat = value);
+                      },
+                    ),
+                    const Divider(),
+                    CheckboxListTile(
+                      title: const Text('รวม Transcript'),
+                      value: includeTranscript,
+                      onChanged: hasTranscript
+                          ? (value) {
+                              setStateDialog(
+                                  () => includeTranscript = value ?? false);
+                            }
+                          : null,
+                      subtitle:
+                          hasTranscript ? null : const Text('ไม่มี Transcript'),
+                    ),
+                    CheckboxListTile(
+                      title: const Text('รวม Report'),
+                      value: includeReport,
+                      onChanged: hasReport
+                          ? (value) {
+                              setStateDialog(
+                                  () => includeReport = value ?? false);
+                            }
+                          : null,
+                      subtitle: hasReport ? null : const Text('ไม่มี Report'),
+                    ),
+                    if (error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          error!,
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      ),
+                  ],
                 ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _openConfigDialog,
-                  icon: const Icon(Icons.tune),
-                  label: const Text('ปรับแต่ง'),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('ยกเลิก'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (!includeTranscript && !includeReport) {
+                      setStateDialog(
+                        () => error = 'โปรดเลือกเนื้อหาอย่างน้อยหนึ่งรายการ',
+                      );
+                      return;
+                    }
+                    Navigator.of(context).pop(
+                      _ExportOptions(
+                        format: selectedFormat,
+                        includeTranscript: includeTranscript,
+                        includeReport: includeReport,
+                      ),
+                    );
+                  },
+                  child: const Text('ส่งออก'),
                 ),
               ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: children,
-            ),
-            if (config.initialPrompt.trim().isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Initial prompt:',
-                style: theme.textTheme.labelLarge,
-              ),
-              Text(
-                config.initialPrompt.trim(),
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-            const SizedBox(height: 8),
-            Text(
-              'เมื่อมีการปรับแต่ง แอปจะรีสตาร์ทอัตโนมัติเพื่อโหลดโมเดลใหม่.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
+            );
+          },
+        );
+      },
     );
   }
+}
 
-  Widget _buildSummaryChip(IconData icon, String label) {
-    return Chip(
-      avatar: Icon(icon, size: 16),
-      label: Text(label),
-    );
-  }
+enum _ExportFormat { txt, docx }
+
+class _ExportOptions {
+  const _ExportOptions({
+    required this.format,
+    required this.includeTranscript,
+    required this.includeReport,
+  });
+
+  final _ExportFormat format;
+  final bool includeTranscript;
+  final bool includeReport;
 }

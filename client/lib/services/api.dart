@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 class BackendApi {
@@ -185,5 +186,36 @@ class BackendApi {
         },
         options: Options(receiveTimeout: const Duration(minutes: 2)));
     return (res.data as Map<String, dynamic>)['report_markdown'] as String;
+  }
+
+  Future<Uint8List> exportData({
+    required String format,
+    required bool includeTranscript,
+    required bool includeReport,
+    String transcript = '',
+    String report = '',
+  }) async {
+    final res = await dio.post(
+      '/export',
+      data: {
+        'format': format,
+        'transcript': transcript,
+        'report_markdown': report,
+        'include_transcript': includeTranscript,
+        'include_report': includeReport,
+      },
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: const Duration(minutes: 2),
+      ),
+    );
+    final data = res.data;
+    if (data is Uint8List) {
+      return data;
+    }
+    if (data is List<int>) {
+      return Uint8List.fromList(data);
+    }
+    throw StateError('Unexpected export response type: ${data.runtimeType}');
   }
 }

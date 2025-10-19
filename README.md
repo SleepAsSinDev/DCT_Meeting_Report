@@ -71,12 +71,13 @@ docker compose up --build
 
 ฝั่ง client (เครื่องที่รัน Flutter app) ให้กำหนด base URL ของเซิร์ฟเวอร์ผ่าน Dart define ตอนรัน:
 ```bash
-cd flutter_app
+cd client
 flutter run \
   --dart-define=SERVER_BASE_URL=http://<ip-เซิร์ฟเวอร์>:8000
 ```
 หรือถ้า build เป็น executable:
 ```bash
+cd client
 flutter build windows \
   --dart-define=SERVER_BASE_URL=http://<ip-เซิร์ฟเวอร์>:8000
 ```
@@ -128,4 +129,10 @@ flutter build windows \
   ```
 - เมื่อคิวเต็ม คำขอใหม่จะรอคิวโดยอัตโนมัติ; ฝั่ง client ที่ใช้ endpoint สตรีมจะได้รับอีเวนต์ `{"event":"queued", ...}` ซึ่งบอกตำแหน่งคิวและ `job_id`
 - เมื่อถึงคิวแล้ว แอปจะเริ่มประมวลผลและระบุเวลาที่รอคิว (`wait_seconds`) ในผลลัพธ์สุดท้ายของทั้ง REST response และอีเวนต์ `done`
+
+## ส่งออกไฟล์รายงาน
+
+- Flutter app สามารถเลือกส่งออก Transcript / Report เป็น `.txt` หรือ `.docx`
+- เซิร์ฟเวอร์มี endpoint `POST /export` (body: `format`, `transcript`, `report_markdown`, `include_transcript`, `include_report`) และตอบกลับเป็นไฟล์พร้อม header `Content-Disposition`
+- หากต้องการ `.docx` ให้ติดตั้ง dependency เพิ่มเติม (มีระบุไว้ใน `server/requirements.txt` แล้ว)
 # DCT_Meeting_Report

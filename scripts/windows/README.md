@@ -17,11 +17,11 @@ Steps
    - Confirm: server\dist\meeting_server.exe exists
 
 2) Build Flutter Windows bundle
-   - cd flutter_app
+   - cd client
    - flutter build windows
 
 3) Place the server binary alongside the app
-   - copy server\dist\meeting_server.exe flutter_app\build\windows\x64\runner\Release\
+   - copy server\dist\meeting_server.exe client\build\windows\x64\runner\Release\
    - (Optional) copy ffmpeg.exe to the same folder and set MEETING_SERVER_FFMPEG=.\ffmpeg.exe if you need preprocessing
 
 4) Build installer with Inno Setup
@@ -37,4 +37,3 @@ Distribution notes
 Troubleshooting
 - If the app UI shows it cannot start the server, confirm meeting_server.exe is present in the install folder and try running it directly. Check Windows Defender/antivirus blocks.
 - If using preprocessing=true and ffmpeg is not present, either add ffmpeg.exe next to the app or disable preprocessing.
-

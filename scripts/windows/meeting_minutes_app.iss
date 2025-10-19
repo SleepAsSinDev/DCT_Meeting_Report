@@ -27,7 +27,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 ; Package the entire Flutter Windows release bundle
 ; Make sure you've run: flutter build windows
-Source: "..\\..\\flutter_app\\build\\windows\\x64\\runner\\Release\\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\\..\\client\\build\\windows\\x64\\runner\\Release\\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{group}\\Meeting Minutes"; Filename: "{app}\\meeting_minutes_app.exe"; WorkingDir: "{app}"
@@ -38,4 +38,3 @@ Filename: "{app}\\meeting_minutes_app.exe"; Description: "Launch Meeting Minutes
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
-

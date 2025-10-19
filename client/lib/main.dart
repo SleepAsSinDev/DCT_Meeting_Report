@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:meeting_minutes_app/pages/home_page.dart';
+import 'package:meeting_minutes_app/services/api.dart';
 import 'package:meeting_minutes_app/services/app_config.dart';
-import 'package:meeting_minutes_app/services/transcription_config.dart';
 
 void main() {
   runApp(const MyApp());
@@ -18,39 +18,28 @@ class _MyAppState extends State<MyApp> {
   late final AppConfig _appConfig;
   BackendApi? _api;
   int _restartToken = 0;
-  final TranscriptionConfig _config = const TranscriptionConfig();
   String? _connectionError;
 
   @override
   void initState() {
     super.initState();
     _appConfig = AppConfig.fromEnvironment();
-    _recreateServices();
+    _initializeApi();
   }
 
-  Future<void> _recreateServices([TranscriptionConfig? newConfig]) async {
-    final config = newConfig ?? _config;
+  Future<void> _initializeApi() async {
     final api = BackendApi(
       _appConfig.baseUrl,
-      defaultModelSize: config.modelSize,
-      defaultLanguage: config.language,
-      defaultQuality: config.quality,
     );
     if (!mounted) {
       return;
     }
     setState(() {
-      _config = config;
       _api = api;
       _connectionError = null;
       _restartToken += 1;
     });
     _verifyRemoteHealth(api);
-  }
-
-  Future<void> _handleConfigChanged(TranscriptionConfig config) async {
-    if (config == _config) return;
-    await _recreateServices(config);
   }
 
   void _verifyRemoteHealth(BackendApi api) {
@@ -94,8 +83,6 @@ class _MyAppState extends State<MyApp> {
       home: HomePage(
         key: ValueKey('home$_restartToken'),
         api: api,
-        config: _config,
-        onConfigChanged: _handleConfigChanged,
         connectionError: _connectionError,
       ),
     );
