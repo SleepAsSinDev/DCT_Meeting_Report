@@ -1,4 +1,6 @@
-import os, json as _json, tempfile as _tf, threading, subprocess
+import os, json as _json, tempfile as _tf, threading, subprocess, asyncio, time
+from collections import deque
+from itertools import count
 from typing import Dict, List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +47,9 @@ LANGUAGE_DEFAULT = os.getenv("WHISPER_LANG", "th")           # default Thai
 QUALITY_DEFAULT = os.getenv("WHISPER_QUALITY", "accurate")   # accurate | balanced | fast | hyperfast
 CPU_THREADS_DEFAULT = int(os.getenv("WHISPER_CPU_THREADS", str(os.cpu_count() or 4)))
 NUM_WORKERS_DEFAULT = int(os.getenv("WHISPER_NUM_WORKERS", "1"))
+TRANSCRIBE_CONCURRENCY = max(
+    1, int(os.getenv("TRANSCRIBE_CONCURRENCY", "1"))
+)
 
 
 def _is_path_like(value: str) -> bool:
@@ -89,6 +94,91 @@ DIARIZATION_AUTH_TOKEN = (
     or os.getenv("HF_TOKEN")
     or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
+
+
+class _JobTicket:
+    __slots__ = (
+        "job_id",
+        "position",
+        "_event",
+        "_queue",
+        "_active",
+        "wait_started",
+        "wait_seconds",
+    )
+
+    def __init__(self, queue: "_JobQueue", job_id: int, event: asyncio.Event, position: int, active: bool):
+        self._queue = queue
+        self.job_id = job_id
+        self.position = position  # number of jobs ahead at enqueue time
+        self._event = event
+        self._active = active
+        self.wait_started = time.time()
+        self.wait_seconds = 0.0
+
+    async def wait_until_ready(self) -> None:
+        try:
+            await self._event.wait()
+        except Exception:
+            raise
+        finally:
+            if not self._active and self._event.is_set():
+                self._active = True
+        if self._active:
+            self.wait_seconds = max(0.0, time.time() - self.wait_started)
+
+    async def release(self) -> None:
+        await self._queue._release(self)
+
+
+class _JobQueue:
+    def __init__(self, capacity: int):
+        self.capacity = max(1, capacity)
+        self._available = self.capacity
+        self._lock = asyncio.Lock()
+        self._waiters: deque = deque()
+        self._counter = count(1)
+
+    async def enqueue(self) -> _JobTicket:
+        job_id = next(self._counter)
+        event = asyncio.Event()
+        async with self._lock:
+            if self._available > 0:
+                self._available -= 1
+                event.set()
+                position = 0
+                active = True
+            else:
+                position = len(self._waiters)
+                self._waiters.append((job_id, event))
+                active = False
+        return _JobTicket(self, job_id, event, position, active)
+
+    async def _release(self, ticket: _JobTicket) -> None:
+        async with self._lock:
+            if ticket._active:
+                if self._waiters:
+                    _, event = self._waiters.popleft()
+                    event.set()
+                else:
+                    self._available = min(self.capacity, self._available + 1)
+            else:
+                # remove from waiters if still queued
+                for idx, (wait_job_id, event) in enumerate(self._waiters):
+                    if wait_job_id == ticket.job_id:
+                        del self._waiters[idx]
+                        break
+
+    async def stats(self) -> Dict[str, int]:
+        async with self._lock:
+            return {
+                "capacity": self.capacity,
+                "active": self.capacity - self._available,
+                "waiting": len(self._waiters),
+            }
+
+
+_JOB_QUEUE = _JobQueue(TRANSCRIBE_CONCURRENCY)
 
 def _normalize_model_name(name: Optional[str]) -> str:
     if not name:
@@ -284,7 +374,8 @@ def _assign_speakers_to_segments(
             seg.speaker = best_label
 
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    queue_stats = await _JOB_QUEUE.stats()
     return {
         "ok": True,
         "default_model": _normalize_model_name(MODEL_SIZE_DEFAULT),
@@ -297,6 +388,8 @@ def healthz():
         "compute": COMPUTE_TYPE,
         "loaded_models": list(_models.keys()),
         "ffmpeg": FFMPEG_BIN,
+        "queue": queue_stats,
+        "max_concurrency": TRANSCRIBE_CONCURRENCY,
     }
 
 @app.post("/transcribe")
@@ -331,7 +424,9 @@ async def transcribe(
         "model": DIARIZATION_MODEL_DEFAULT,
     }
 
+    ticket = await _JOB_QUEUE.enqueue()
     try:
+        await ticket.wait_until_ready()
         segments_gen, info = model.transcribe(
             wav_path,
             language=None if language == "auto" else language,
@@ -369,8 +464,14 @@ async def transcribe(
             if diarization_meta.get("applied")
             else [],
             "diarization": diarization_meta,
+            "queue": {
+                "job_id": ticket.job_id,
+                "wait_seconds": round(ticket.wait_seconds, 3),
+                "position_on_enqueue": ticket.position,
+            },
         }
     finally:
+        await ticket.release()
         try: os.remove(tmp_path)
         except Exception: pass
         if wav_path != tmp_path:
@@ -401,12 +502,29 @@ async def transcribe_stream(
 
     wav_path = _maybe_preprocess(tmp_path, preprocess, quick=fast_preprocess)
 
-    def gen():
+    ticket = await _JOB_QUEUE.enqueue()
+
+    async def gen():
         try:
-            yield (_json.dumps({"event":"progress","progress":0.0,"partial_text":""})+"\n").encode("utf-8")
+            if ticket.position > 0:
+                yield (
+                    _json.dumps(
+                        {
+                            "event": "queued",
+                            "job_id": ticket.job_id,
+                            "position": ticket.position,
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            await ticket.wait_until_ready()
+            yield (
+                _json.dumps({"event": "progress", "progress": 0.0, "partial_text": ""})
+                + "\n"
+            ).encode("utf-8")
             segments_gen, info = model.transcribe(
                 wav_path,
-                language=None if language=="auto" else language,
+                language=None if language == "auto" else language,
                 initial_prompt=initial_prompt,
                 **params,
             )
@@ -419,10 +537,17 @@ async def transcribe_stream(
                 )
                 collected_segments.append(collected_segment)
                 full_text.append(seg.text)
-                progress = (seg.end/duration*100.0) if duration>0 else 0.0
-                yield (_json.dumps({
-                    "event":"progress","progress":round(progress,2),"partial_text":seg.text
-                })+"\n").encode("utf-8")
+                progress = (seg.end / duration * 100.0) if duration > 0 else 0.0
+                yield (
+                    _json.dumps(
+                        {
+                            "event": "progress",
+                            "progress": round(progress, 2),
+                            "partial_text": seg.text,
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
             diarization_meta = {
                 "requested": diarize,
                 "applied": False,
@@ -446,29 +571,45 @@ async def transcribe_stream(
                     if getattr(seg, "speaker", None)
                 }
             )
-            yield (_json.dumps({
-                "event":"done","text":" ".join(full_text).strip(),
-                "language": getattr(info,"language","auto"),
-                "duration_sec": duration,
-                "model": f"faster-whisper-{model_size}({COMPUTE_TYPE})",
-                "quality": _normalize_quality(quality),
-                "cpu_threads": CPU_THREADS_DEFAULT,
-                "num_workers": NUM_WORKERS_DEFAULT,
-                "preprocess": preprocess,
-                "fast_preprocess": fast_preprocess,
-                "segments": [s.model_dump() for s in collected_segments],
-                "speakers": speakers,
-                "speaker_segments": diarization_meta["segments"]
-                if diarization_meta.get("applied")
-                else [],
-                "diarization": diarization_meta,
-            })+"\n").encode("utf-8")
+            yield (
+                _json.dumps(
+                    {
+                        "event": "done",
+                        "text": " ".join(full_text).strip(),
+                        "language": getattr(info, "language", "auto"),
+                        "duration_sec": duration,
+                        "model": f"faster-whisper-{model_size}({COMPUTE_TYPE})",
+                        "quality": _normalize_quality(quality),
+                        "cpu_threads": CPU_THREADS_DEFAULT,
+                        "num_workers": NUM_WORKERS_DEFAULT,
+                        "preprocess": preprocess,
+                        "fast_preprocess": fast_preprocess,
+                        "segments": [s.model_dump() for s in collected_segments],
+                        "speakers": speakers,
+                        "speaker_segments": diarization_meta["segments"]
+                        if diarization_meta.get("applied")
+                        else [],
+                        "diarization": diarization_meta,
+                        "queue": {
+                            "job_id": ticket.job_id,
+                            "wait_seconds": round(ticket.wait_seconds, 3),
+                            "position_on_enqueue": ticket.position,
+                        },
+                    }
+                )
+                + "\n"
+            ).encode("utf-8")
         finally:
-            try: os.remove(tmp_path)
-            except Exception: pass
+            await ticket.release()
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
             if wav_path != tmp_path:
-                try: os.remove(wav_path)
-                except Exception: pass
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
@@ -499,8 +640,22 @@ async def transcribe_stream_upload(
 
     wav_path = _maybe_preprocess(tmp_path, preprocess, quick=fast_preprocess)
 
-    def gen():
+    ticket = await _JOB_QUEUE.enqueue()
+
+    async def gen():
         try:
+            if ticket.position > 0:
+                yield (
+                    _json.dumps(
+                        {
+                            "event": "queued",
+                            "job_id": ticket.job_id,
+                            "position": ticket.position,
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            await ticket.wait_until_ready()
             yield (
                 _json.dumps({"event": "progress", "progress": 0.0, "partial_text": ""})
                 + "\n"
@@ -572,11 +727,17 @@ async def transcribe_stream_upload(
                         if diarization_meta.get("applied")
                         else [],
                         "diarization": diarization_meta,
+                        "queue": {
+                            "job_id": ticket.job_id,
+                            "wait_seconds": round(ticket.wait_seconds, 3),
+                            "position_on_enqueue": ticket.position,
+                        },
                     }
                 )
                 + "\n"
             ).encode("utf-8")
         finally:
+            await ticket.release()
             try:
                 os.remove(tmp_path)
             except Exception:

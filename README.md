@@ -1,8 +1,8 @@
-# Meeting Minutes (faster-whisper + Flutter) – Stable Starter (No Recording)
+# Meeting Minutes (faster-whisper + Flutter) – Remote Server Setup
 
-- Desktop supervisor auto-starts server (127.0.0.1:8000), no auto-shutdown on hot-restart.
-- Server uses uvicorn host=127.0.0.1, reload=False.
-- Endpoints: /healthz, /transcribe, /summarize, /shutdown.
+- Flutter desktop app เชื่อมต่อเซิร์ฟเวอร์ FastAPI ที่รันแยกต่างหาก
+- เซิร์ฟเวอร์มี endpoint หลัก: `/healthz`, `/transcribe`, `/transcribe_stream`, `/transcribe_stream_upload`, `/summarize`
+- รองรับ speaker diarization, ระบบคิว, และการกำหนดโมเดลผ่าน environment variables
 
 ## รันเซิร์ฟเวอร์ด้วย Docker
 
@@ -69,21 +69,19 @@ docker compose up --build
 
 ### เชื่อมต่อ Flutter app ให้ใช้เซิร์ฟเวอร์แยก
 
-ฝั่ง client (เครื่องที่รัน Flutter app) ไม่จำเป็นต้อง start เซิร์ฟเวอร์เองแล้ว ให้ส่งค่า Dart define ตอนรัน:
+ฝั่ง client (เครื่องที่รัน Flutter app) ให้กำหนด base URL ของเซิร์ฟเวอร์ผ่าน Dart define ตอนรัน:
 ```bash
 cd flutter_app
 flutter run \
-  --dart-define=MANAGE_SERVER=false \
   --dart-define=SERVER_BASE_URL=http://<ip-เซิร์ฟเวอร์>:8000
 ```
 หรือถ้า build เป็น executable:
 ```bash
 flutter build windows \
-  --dart-define=MANAGE_SERVER=false \
   --dart-define=SERVER_BASE_URL=http://<ip-เซิร์ฟเวอร์>:8000
 ```
-- แอปจะข้ามขั้นตอน start เซิร์ฟเวอร์ และไปตรวจสอบโมเดลที่เซิร์ฟเวอร์ระยะไกลแทน
-- หากเซิร์ฟเวอร์มีหลายโมเดลอยู่แล้ว หน้า “กำลังโหลดโมเดล” จะผ่านอย่างรวดเร็วเมื่อ `loaded_models` มีค่า
+- แอปจะเชื่อมต่อ REST API โดยตรง และแสดงสถานะคิว / ข้อผิดพลาดผ่านหน้า Home
+- หากต้องการเรียกผ่าน HTTPS ให้เปลี่ยน `SERVER_BASE_URL=https://your-domain`
 
 ## แยกผู้พูดด้วย Speaker Diarization
 
@@ -122,35 +120,12 @@ flutter build windows \
      --dart-define=SERVER_BASE_URL=https://meeting.example.com
    ```
 
-## สร้างตัวติดตั้ง Windows (Inno Setup)
+## จำกัดจำนวนงานพร้อมกัน / ระบบคิว
 
-หากต้องการแพ็กแอปพร้อมเซิร์ฟเวอร์สำหรับผู้ใช้ Windows ให้ทำตามขั้นตอนโดยรวมดังนี้ (รายละเอียดมีใน `scripts/windows/README.md`):
-
-1. **สร้างไบนารีของเซิร์ฟเวอร์** บน Windows ด้วย PyInstaller
-   ```powershell
-   python -m venv server\.venv
-   server\.venv\Scripts\activate
-   pip install -r server\requirements.txt pyinstaller
-   cd server
-   pyinstaller --clean --onefile --name meeting_server ^
-     --collect-all faster_whisper --collect-all ctranslate2 --collect-all tokenizers ^
-     main.py
-   ```
-   ผลลัพธ์อยู่ที่ `server\dist\meeting_server.exe`
-
-2. **Build Flutter Windows bundle**
-   ```powershell
-   cd flutter_app
-   flutter build windows
-   ```
-
-3. **คัดลอก meeting_server.exe** ไปไว้ที่ `flutter_app\build\windows\x64\runner\Release\` (ถ้ามี ffmpeg.exe ให้คัดลอกมาด้วย)
-
-4. **รัน Inno Setup** ด้วยสคริปต์ `scripts\windows\meeting_minutes_app.iss`
-   ```powershell
-   iscc.exe scripts\windows\meeting_minutes_app.iss
-   ```
-   แฟ้มติดตั้งที่ได้อยู่ใน `dist\windows\MeetingMinutesSetup.exe`
-
-ตัวติดตั้งนี้จะวางทั้ง Flutter app และ `meeting_server.exe` ให้พร้อมใช้งานบน Windows โดยไม่ต้องติดตั้ง Python เพิ่มเติม
+- ตั้งค่า `TRANSCRIBE_CONCURRENCY` (ค่าเริ่มต้น 1) เพื่อกำหนดจำนวนงานถอดเสียงที่ทำพร้อมกันได้สูงสุดในเซิร์ฟเวอร์เดี่ยว
+  ```bash
+  export TRANSCRIBE_CONCURRENCY=2
+  ```
+- เมื่อคิวเต็ม คำขอใหม่จะรอคิวโดยอัตโนมัติ; ฝั่ง client ที่ใช้ endpoint สตรีมจะได้รับอีเวนต์ `{"event":"queued", ...}` ซึ่งบอกตำแหน่งคิวและ `job_id`
+- เมื่อถึงคิวแล้ว แอปจะเริ่มประมวลผลและระบุเวลาที่รอคิว (`wait_seconds`) ในผลลัพธ์สุดท้ายของทั้ง REST response และอีเวนต์ `done`
 # DCT_Meeting_Report

@@ -37,14 +37,6 @@ class TranscriptionConfig {
     );
   }
 
-  Map<String, String> toServerEnvironment() {
-    return {
-      'WHISPER_MODEL': modelSize,
-      'WHISPER_LANG': language,
-      'WHISPER_QUALITY': quality,
-    };
-  }
-
   @override
   int get hashCode => Object.hash(modelSize, language, quality, preprocess,
       fastPreprocess, initialPrompt, diarize);

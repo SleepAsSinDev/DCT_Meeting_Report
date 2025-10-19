@@ -28,6 +28,15 @@ python main.py
   ```
 - เมื่อ `diarize=true` ในคำขอ `/transcribe` หรือ endpoint streaming ผลลัพธ์จะมี `segment.speaker` และ `speaker_segments` สำหรับวิเคราะห์ผู้พูด
 
+### ระบบคิว / จำกัดงานพร้อมกัน
+- ใช้ environment `TRANSCRIBE_CONCURRENCY` (default 1) เพื่อกำหนดจำนวนงานถอดเสียงที่รันพร้อมกัน
+  ```bash
+  export TRANSCRIBE_CONCURRENCY=2
+  uvicorn main:app --host 127.0.0.1 --port 8001 --proxy-headers --forwarded-allow-ips='*'
+  ```
+- เมื่อจำนวนคำขอเกินกว่าค่า concurrency จะถูกพักคิวและเมื่อถึงคิวแล้ว response จะมีข้อมูล `queue.job_id`, `wait_seconds`, `position_on_enqueue`
+- ใน endpoint แบบสตรีม ฝั่ง client จะได้รับอีเวนต์ `event: queued` แสดงลำดับคิวก่อนเข้าสู่การประมวลผล
+
 ### Reverse proxy ด้วย Nginx
 - ให้ uvicorn ทำงานภายในเครื่อง: `uvicorn main:app --host 127.0.0.1 --port 8001 --proxy-headers --forwarded-allow-ips='*'`
 - นำ `nginx.conf.example` ไปใช้เป็นต้นแบบ (copy ไป `/etc/nginx/sites-available/meeting_minutes` แล้วแก้ `server_name` และ path ของ cert/key)

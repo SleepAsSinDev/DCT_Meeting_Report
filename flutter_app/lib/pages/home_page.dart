@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 
 import 'package:meeting_minutes_app/services/api.dart';
 import 'package:meeting_minutes_app/services/transcription_config.dart';
-import 'package:meeting_minutes_app/pages/transcription_config_dialog.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -13,11 +12,13 @@ class HomePage extends StatefulWidget {
     required this.api,
     required this.config,
     required this.onConfigChanged,
+    this.connectionError,
   });
 
   final BackendApi api;
   final TranscriptionConfig config;
   final ValueChanged<TranscriptionConfig> onConfigChanged;
+  final String? connectionError;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -35,6 +36,7 @@ class _HomePageState extends State<HomePage> {
   List<Map<String, dynamic>>? _segments;
   List<String> _speakers = const [];
   Map<String, dynamic>? _diarizationInfo;
+  Map<String, dynamic>? _queueMeta;
 
   // accumulate live transcript
   String liveText = '';
@@ -81,6 +83,7 @@ class _HomePageState extends State<HomePage> {
       _segments = null;
       _speakers = const [];
       _diarizationInfo = null;
+      _queueMeta = null;
     });
 
     final result = await FilePicker.platform.pickFiles(
@@ -144,17 +147,37 @@ class _HomePageState extends State<HomePage> {
             status = 'กำลังถอดเสียง (มีอัปเดตความคืบหน้า)';
             progress = p.clamp(0, 100);
             partial = piece;
+            if (_queueMeta != null) {
+              final updated = Map<String, dynamic>.from(_queueMeta!);
+              updated['position'] = 0;
+              _queueMeta = updated;
+            }
             if (piece.isNotEmpty && piece != lastPiece) {
               liveText += (liveText.isEmpty ? '' : ' ') + piece;
               lastPiece = piece;
             }
           });
           _scrollTranscriptToEnd();
+        } else if (event == 'queued') {
+          final position = (ev['position'] as num?)?.toInt() ?? 0;
+          final jobId = (ev['job_id'] ?? '').toString();
+          if (!mounted) break;
+          setState(() {
+            final ordinal =
+                position <= 0 ? 'กำลังเตรียม...' : 'ลำดับที่ ${position + 1}';
+            status = 'กำลังรอคิว ($ordinal)';
+            _queueMeta = {
+              'position': position,
+              'position_on_enqueue': position,
+              if (jobId.isNotEmpty) 'job_id': jobId,
+            };
+          });
         } else if (event == 'done') {
           final text = ((ev['text'] as String?) ?? '').trim();
           final segmentsData = _parseMapList(ev['segments']);
           final speakersList = _parseSpeakers(ev['speakers']);
           final diarizationInfo = _parseMap(ev['diarization']);
+          final queueInfo = _parseMap(ev['queue']);
           if (!mounted) break;
           setState(() {
             transcript = text.isNotEmpty ? text : liveText;
@@ -164,6 +187,24 @@ class _HomePageState extends State<HomePage> {
             _segments = segmentsData.isEmpty ? null : segmentsData;
             _speakers = speakersList.isEmpty ? const [] : speakersList;
             _diarizationInfo = diarizationInfo;
+            if (queueInfo != null) {
+              final copied = Map<String, dynamic>.from(queueInfo);
+              final pos = (copied['position_on_enqueue'] as num?)?.toInt();
+              if (pos != null) {
+                copied['position'] = pos;
+              }
+              final jobId = copied['job_id'];
+              if (jobId != null) {
+                copied['job_id'] = jobId.toString();
+              }
+              final wait = (copied['wait_seconds'] as num?)?.toDouble();
+              if (wait != null) {
+                copied['wait_seconds'] = wait;
+              }
+              _queueMeta = copied;
+            } else {
+              _queueMeta = null;
+            }
           });
           _scrollTranscriptToEnd();
           break;
@@ -225,6 +266,10 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final transcriptDisplay = _renderTranscriptText();
     final hasTranscript = _hasTranscript();
+    final queueInfo = _queueMeta;
+    final queuePosition = (queueInfo?['position'] as num?)?.toInt();
+    final queueWaitSeconds = (queueInfo?['wait_seconds'] as num?)?.toDouble();
+    final queueJobId = queueInfo?['job_id']?.toString();
     return Scaffold(
       appBar: AppBar(
         title: const Text('Meeting Minutes'),
@@ -258,7 +303,46 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
             const SizedBox(height: 12),
+            if (widget.connectionError != null) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.withOpacity(0.4)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.error_outline, color: Colors.red),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: ${widget.connectionError}',
+                        style: const TextStyle(color: Colors.red),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             Text(status),
+            if (queueInfo != null) ...[
+              const SizedBox(height: 4),
+              if (queuePosition != null)
+                Text(
+                  queuePosition <= 0
+                      ? 'คิว: กำลังเริ่มประมวลผล'
+                      : 'คิว: มีงานก่อนหน้าจำนวน $queuePosition งาน',
+                ),
+              if (queueWaitSeconds != null)
+                Text(
+                  'เวลาที่รอคิว: ${queueWaitSeconds.toStringAsFixed(1)} วินาที',
+                ),
+              if (queueJobId != null && queueJobId.isNotEmpty)
+                Text('Queue job id: $queueJobId'),
+            ],
             if (_speakers.isNotEmpty) ...[
               const SizedBox(height: 6),
               Text('ผู้พูดที่ตรวจพบ: ${_speakers.join(', ')}'),
