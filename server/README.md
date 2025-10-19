@@ -8,6 +8,32 @@ cp .env.example .env
 python main.py
 # open http://127.0.0.1:8000/healthz
 
+### GPU notes (เช่น RTX 3060 Ti)
+- ติดตั้งไดรเวอร์ NVIDIA ให้ `nvidia-smi` ใช้งานได้ จากนั้น activate venv ตามขั้นตอนด้านบน
+- กำหนด environment:
+  ```bash
+  export HOST=0.0.0.0          # ฟังทุกอินเทอร์เฟซเมื่อรันเป็นเซิร์ฟเวอร์แยก
+  export WHISPER_COMPUTE=float16   # บังคับ ctranslate2 ใช้ CUDA ปริมาณหน่วยความจำต่ำลง
+  export WHISPER_MODEL=large-v3    # หรือโมเดลที่ต้องการ
+  ```
+- หากคำสั่ง `uvicorn main:app --host 0.0.0.0 --port 8000` รันสำเร็จแล้วเรียก `/healthz` จะเห็นค่า `compute` เป็น `float16` เมื่อ GPU ถูกใช้งาน
+
+### Speaker diarization (ระบุผู้พูด)
+- ติดตั้ง `pyannote.audio` (อยู่ใน `requirements.txt`) และติดตั้ง `torch` เวอร์ชันที่รองรับ GPU เองหากต้องการประสิทธิภาพสูง
+- ตั้งค่า token ของ Hugging Face ที่มีสิทธิ์เข้าถึง `pyannote/speaker-diarization-3.1`
+  ```bash
+  export DIARIZATION_AUTH_TOKEN=<your_hf_token>
+  export DIARIZATION_MODEL=pyannote/speaker-diarization-3.1
+  export DIARIZATION_DEVICE=cuda   # หรือ cpu
+  ```
+- เมื่อ `diarize=true` ในคำขอ `/transcribe` หรือ endpoint streaming ผลลัพธ์จะมี `segment.speaker` และ `speaker_segments` สำหรับวิเคราะห์ผู้พูด
+
+### Reverse proxy ด้วย Nginx
+- ให้ uvicorn ทำงานภายในเครื่อง: `uvicorn main:app --host 127.0.0.1 --port 8001 --proxy-headers --forwarded-allow-ips='*'`
+- นำ `nginx.conf.example` ไปใช้เป็นต้นแบบ (copy ไป `/etc/nginx/sites-available/meeting_minutes` แล้วแก้ `server_name` และ path ของ cert/key)
+- เปิดใช้ config (`ln -s ...`, `nginx -t`, `systemctl reload nginx`) แล้วชี้โดเมนมาที่เครื่องดังกล่าว
+- เมื่อเข้าผ่าน HTTPS ต้องตั้ง `SERVER_BASE_URL=https://<โดเมน>` ในฝั่ง Flutter/Dart defines ด้วย
+
 ## Build a standalone binary (no Python needed for users)
 Prereq: Python 3.11+ and PyInstaller on the build machine.
 

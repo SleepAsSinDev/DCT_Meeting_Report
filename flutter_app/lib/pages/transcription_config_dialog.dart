@@ -12,8 +12,7 @@ class TranscriptionConfigDialog extends StatefulWidget {
       _TranscriptionConfigDialogState();
 }
 
-class _TranscriptionConfigDialogState
-    extends State<TranscriptionConfigDialog> {
+class _TranscriptionConfigDialogState extends State<TranscriptionConfigDialog> {
   static const _modelPresets = <String>[
     'tiny',
     'base',
@@ -27,6 +26,7 @@ class _TranscriptionConfigDialogState
   late String _quality;
   late bool _preprocess;
   late bool _fastPreprocess;
+  late bool _diarize;
   late TextEditingController _customModelController;
   late TextEditingController _languageController;
   late TextEditingController _initialPromptController;
@@ -40,12 +40,12 @@ class _TranscriptionConfigDialogState
     _quality = initial.quality;
     _preprocess = initial.preprocess;
     _fastPreprocess = initial.fastPreprocess;
+    _diarize = initial.diarize;
     final isPreset = _modelPresets.contains(initial.modelSize);
     _modelSelection = isPreset ? initial.modelSize : 'custom';
-    _customModelController = TextEditingController(
-        text: isPreset ? '' : initial.modelSize);
-    _languageController =
-        TextEditingController(text: initial.language.trim());
+    _customModelController =
+        TextEditingController(text: isPreset ? '' : initial.modelSize);
+    _languageController = TextEditingController(text: initial.language.trim());
     _initialPromptController =
         TextEditingController(text: initial.initialPrompt.trim());
   }
@@ -74,6 +74,7 @@ class _TranscriptionConfigDialogState
       preprocess: _preprocess,
       fastPreprocess: _preprocess ? _fastPreprocess : false,
       initialPrompt: initialPrompt,
+      diarize: _diarize,
     );
     Navigator.of(context).pop(config);
   }
@@ -151,7 +152,8 @@ class _TranscriptionConfigDialogState
                   DropdownMenuItem(value: 'accurate', child: Text('accurate')),
                   DropdownMenuItem(value: 'balanced', child: Text('balanced')),
                   DropdownMenuItem(value: 'fast', child: Text('fast')),
-                  DropdownMenuItem(value: 'hyperfast', child: Text('hyperfast')),
+                  DropdownMenuItem(
+                      value: 'hyperfast', child: Text('hyperfast')),
                 ],
                 onChanged: (value) {
                   if (value == null) return;
@@ -179,7 +181,8 @@ class _TranscriptionConfigDialogState
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('โหมด preprocess แบบรวดเร็ว'),
-                subtitle: const Text('ลดเวลาประมวลผล เหมาะกับการทดลองเบื้องต้น'),
+                subtitle:
+                    const Text('ลดเวลาประมวลผล เหมาะกับการทดลองเบื้องต้น'),
                 value: _fastPreprocess,
                 onChanged: _preprocess
                     ? (value) {
@@ -198,6 +201,19 @@ class _TranscriptionConfigDialogState
                 ),
                 minLines: 2,
                 maxLines: 4,
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('ระบุผู้พูด (Speaker diarization)'),
+                subtitle: const Text(
+                    'ต้องติดตั้ง pyannote.audio และตั้งค่า HuggingFace token บนเซิร์ฟเวอร์'),
+                value: _diarize,
+                onChanged: (value) {
+                  setState(() {
+                    _diarize = value;
+                  });
+                },
               ),
             ],
           ),

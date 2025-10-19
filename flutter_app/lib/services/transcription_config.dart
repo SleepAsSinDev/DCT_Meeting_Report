@@ -5,6 +5,7 @@ class TranscriptionConfig {
   final bool preprocess;
   final bool fastPreprocess;
   final String initialPrompt;
+  final bool diarize;
 
   const TranscriptionConfig({
     this.modelSize = 'large-v3',
@@ -13,6 +14,7 @@ class TranscriptionConfig {
     this.preprocess = true,
     this.fastPreprocess = false,
     this.initialPrompt = '',
+    this.diarize = false,
   });
 
   TranscriptionConfig copyWith({
@@ -22,6 +24,7 @@ class TranscriptionConfig {
     bool? preprocess,
     bool? fastPreprocess,
     String? initialPrompt,
+    bool? diarize,
   }) {
     return TranscriptionConfig(
       modelSize: modelSize ?? this.modelSize,
@@ -30,6 +33,7 @@ class TranscriptionConfig {
       preprocess: preprocess ?? this.preprocess,
       fastPreprocess: fastPreprocess ?? this.fastPreprocess,
       initialPrompt: initialPrompt ?? this.initialPrompt,
+      diarize: diarize ?? this.diarize,
     );
   }
 
@@ -43,7 +47,7 @@ class TranscriptionConfig {
 
   @override
   int get hashCode => Object.hash(modelSize, language, quality, preprocess,
-      fastPreprocess, initialPrompt);
+      fastPreprocess, initialPrompt, diarize);
 
   @override
   bool operator ==(Object other) {
@@ -53,6 +57,7 @@ class TranscriptionConfig {
         other.quality == quality &&
         other.preprocess == preprocess &&
         other.fastPreprocess == fastPreprocess &&
-        other.initialPrompt == initialPrompt;
+        other.initialPrompt == initialPrompt &&
+        other.diarize == diarize;
   }
 }

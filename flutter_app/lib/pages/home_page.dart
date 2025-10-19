@@ -25,13 +25,16 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   bool loading = false;
-  double progress = 0.0;         // 0..100
+  double progress = 0.0; // 0..100
   String partial = '';
   String status = 'พร้อม';
   String? transcript;
   String? report;
   String? pickedPath;
   bool _showingRestartNotice = false;
+  List<Map<String, dynamic>>? _segments;
+  List<String> _speakers = const [];
+  Map<String, dynamic>? _diarizationInfo;
 
   // accumulate live transcript
   String liveText = '';
@@ -75,6 +78,9 @@ class _HomePageState extends State<HomePage> {
       report = null;
       liveText = '';
       lastPiece = '';
+      _segments = null;
+      _speakers = const [];
+      _diarizationInfo = null;
     });
 
     final result = await FilePicker.platform.pickFiles(
@@ -119,15 +125,15 @@ class _HomePageState extends State<HomePage> {
               : widget.config.initialPrompt,
           preprocess: widget.config.preprocess,
           fastPreprocess: widget.config.fastPreprocess,
-          onSendProgress: (sent, total) {
-            if (!mounted) {
-              return;
-            }
-            final percent = total > 0 ? (sent / total * 100.0) : 0.0;
-            setState(() {
-              status = 'กำลังอัปโหลด... ${percent.toStringAsFixed(1)}%';
-            });
-          })) {
+          diarize: widget.config.diarize, onSendProgress: (sent, total) {
+        if (!mounted) {
+          return;
+        }
+        final percent = total > 0 ? (sent / total * 100.0) : 0.0;
+        setState(() {
+          status = 'กำลังอัปโหลด... ${percent.toStringAsFixed(1)}%';
+        });
+      })) {
         final event = (ev['event'] as String?) ?? '';
 
         if (event == 'progress') {
@@ -146,12 +152,18 @@ class _HomePageState extends State<HomePage> {
           _scrollTranscriptToEnd();
         } else if (event == 'done') {
           final text = ((ev['text'] as String?) ?? '').trim();
+          final segmentsData = _parseMapList(ev['segments']);
+          final speakersList = _parseSpeakers(ev['speakers']);
+          final diarizationInfo = _parseMap(ev['diarization']);
           if (!mounted) break;
           setState(() {
             transcript = text.isNotEmpty ? text : liveText;
             progress = 100;
             loading = false;
             status = 'ถอดเสียงเสร็จแล้ว';
+            _segments = segmentsData.isEmpty ? null : segmentsData;
+            _speakers = speakersList.isEmpty ? const [] : speakersList;
+            _diarizationInfo = diarizationInfo;
           });
           _scrollTranscriptToEnd();
           break;
@@ -167,8 +179,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> makeReport() async {
-    final source = transcript ?? liveText;
-    if (source.isEmpty) {
+    final source = _buildReportSource();
+    if (source.trim().isEmpty) {
       if (!mounted) return;
       setState(() {
         status = 'ยังไม่มีข้อความถอดเสียง';
@@ -211,7 +223,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final liveOrFinal = transcript ?? (liveText.isNotEmpty ? liveText : (partial.isEmpty ? '-' : partial));
+    final transcriptDisplay = _renderTranscriptText();
+    final hasTranscript = _hasTranscript();
     return Scaffold(
       appBar: AppBar(
         title: const Text('Meeting Minutes'),
@@ -239,29 +252,45 @@ class _HomePageState extends State<HomePage> {
                   child: const Text('เลือกไฟล์เสียง'),
                 ),
                 ElevatedButton(
-                  onPressed: (loading || liveOrFinal.trim().isEmpty) ? null : makeReport,
+                  onPressed: (loading || !hasTranscript) ? null : makeReport,
                   child: const Text('สร้างรายงาน'),
                 ),
               ],
             ),
             const SizedBox(height: 12),
             Text(status),
+            if (_speakers.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text('ผู้พูดที่ตรวจพบ: ${_speakers.join(', ')}'),
+            ],
+            if (_diarizationInfo != null &&
+                (_diarizationInfo!['requested'] == true) &&
+                _diarizationInfo!['applied'] != true) ...[
+              const SizedBox(height: 6),
+              Text(
+                'ไม่สามารถระบุผู้พูดได้: ${(_diarizationInfo!['reason'] ?? 'ไม่ทราบสาเหตุ').toString()}',
+                style: const TextStyle(color: Colors.orange),
+              ),
+            ],
             if (loading) ...[
               const SizedBox(height: 6),
               LinearProgressIndicator(
-                value: (progress > 0 && progress < 100) ? (progress / 100.0) : null,
+                value: (progress > 0 && progress < 100)
+                    ? (progress / 100.0)
+                    : null,
               ),
               const SizedBox(height: 6),
               Text('${progress.toStringAsFixed(1)}%'),
-              if (partial.isNotEmpty) Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  partial,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.grey),
+              if (partial.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    partial,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
                 ),
-              ),
             ],
             const SizedBox(height: 16),
             Expanded(
@@ -275,12 +304,13 @@ class _HomePageState extends State<HomePage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Transcript (สด)', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const Text('Transcript (สด)',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
                             const Divider(),
                             Expanded(
                               child: SingleChildScrollView(
                                 controller: _transcriptScroll,
-                                child: Text(liveOrFinal),
+                                child: Text(transcriptDisplay),
                               ),
                             ),
                           ],
@@ -297,7 +327,8 @@ class _HomePageState extends State<HomePage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Report', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const Text('Report',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
                             const Divider(),
                             Expanded(
                               child: report == null
@@ -364,6 +395,98 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  List<Map<String, dynamic>> _parseMapList(dynamic raw) {
+    if (raw is! List) return <Map<String, dynamic>>[];
+    final output = <Map<String, dynamic>>[];
+    for (final item in raw) {
+      if (item is Map<String, dynamic>) {
+        output.add(Map<String, dynamic>.from(item));
+      } else if (item is Map) {
+        output.add(item.map((key, value) => MapEntry(key.toString(), value)));
+      }
+    }
+    return output;
+  }
+
+  Map<String, dynamic>? _parseMap(dynamic raw) {
+    if (raw is Map<String, dynamic>) {
+      return Map<String, dynamic>.from(raw);
+    }
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry(key.toString(), value));
+    }
+    return null;
+  }
+
+  List<String> _parseSpeakers(dynamic raw) {
+    if (raw is! List) return <String>[];
+    final set = <String>{};
+    for (final entry in raw) {
+      if (entry == null) continue;
+      final value = entry.toString().trim();
+      if (value.isNotEmpty) {
+        set.add(value);
+      }
+    }
+    final list = set.toList()..sort();
+    return list;
+  }
+
+  String _renderTranscriptText() {
+    final segs = _segments;
+    if (segs != null && segs.isNotEmpty) {
+      final lines = <String>[];
+      for (final seg in segs) {
+        final text = (seg['text'] ?? '').toString().trim();
+        if (text.isEmpty) continue;
+        final speaker = (seg['speaker'] ?? '').toString().trim();
+        lines.add(speaker.isNotEmpty ? '$speaker: $text' : text);
+      }
+      if (lines.isNotEmpty) {
+        return lines.join('\n');
+      }
+    }
+    final base = transcript?.trim();
+    if (base != null && base.isNotEmpty) return base;
+    if (liveText.trim().isNotEmpty) return liveText.trim();
+    if (partial.trim().isNotEmpty) return partial.trim();
+    return '-';
+  }
+
+  bool _hasTranscript() {
+    final segs = _segments;
+    if (segs != null &&
+        segs.any((seg) => ((seg['text'] ?? '').toString().trim().isNotEmpty))) {
+      return true;
+    }
+    if (transcript != null && transcript!.trim().isNotEmpty) {
+      return true;
+    }
+    if (liveText.trim().isNotEmpty) return true;
+    if (partial.trim().isNotEmpty) return true;
+    return false;
+  }
+
+  String _buildReportSource() {
+    final segs = _segments;
+    if (segs != null && segs.isNotEmpty) {
+      return segs
+          .map((seg) {
+            final text = (seg['text'] ?? '').toString().trim();
+            if (text.isEmpty) return '';
+            final speaker = (seg['speaker'] ?? '').toString().trim();
+            return speaker.isNotEmpty ? '$speaker: $text' : text;
+          })
+          .where((line) => line.isNotEmpty)
+          .join('\n');
+    }
+    final base = transcript?.trim();
+    if (base != null && base.isNotEmpty) {
+      return base;
+    }
+    return liveText.trim();
+  }
+
   Widget _buildConfigSummary(BuildContext context) {
     final config = widget.config;
     final theme = Theme.of(context);
@@ -377,6 +500,8 @@ class _HomePageState extends State<HomePage> {
       _buildSummaryChip(Icons.language, 'ภาษา: ${config.language}'),
       _buildSummaryChip(Icons.speed, 'โหมด: ${config.quality}'),
       _buildSummaryChip(Icons.tune, preprocessLabel),
+      _buildSummaryChip(Icons.record_voice_over,
+          'ระบุผู้พูด: ${config.diarize ? 'เปิด' : 'ปิด'}'),
     ];
 
     return Card(

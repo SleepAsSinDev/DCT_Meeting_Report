@@ -4,3 +4,5 @@ python-multipart>=0.0.9
 pydantic>=2.5
 faster-whisper>=1.0
 # Optional for preprocess=true (install system FFmpeg via apt/brew/choco)
+# Speaker diarization (requires torch w/ CUDA for best performance)
+pyannote.audio>=3.1

@@ -43,6 +43,7 @@ class BackendApi {
     String? initialPrompt,
     bool? preprocess,
     bool? fastPreprocess,
+    bool? diarize,
   }) async {
     final bytes = await File(filePath).readAsBytes();
     final filename = filePath.split(Platform.pathSeparator).last;
@@ -51,9 +52,12 @@ class BackendApi {
       'language': language ?? defaultLanguage,
       'model_size': modelSize ?? defaultModelSize,
       'quality': quality ?? defaultQuality,
-      if (initialPrompt != null && initialPrompt.isNotEmpty) 'initial_prompt': initialPrompt,
-      if (preprocess != null) 'preprocess': preprocess,
-      if (fastPreprocess != null) 'fast_preprocess': fastPreprocess,
+      if (initialPrompt != null && initialPrompt.isNotEmpty)
+        'initial_prompt': initialPrompt,
+      if (preprocess != null) 'preprocess': preprocess ? 'true' : 'false',
+      if (fastPreprocess != null)
+        'fast_preprocess': fastPreprocess ? 'true' : 'false',
+      if (diarize != null) 'diarize': diarize ? 'true' : 'false',
     });
   }
 
@@ -65,6 +69,7 @@ class BackendApi {
     String? initialPrompt,
     bool? preprocess,
     bool? fastPreprocess,
+    bool? diarize,
   }) async {
     final formData = await _buildFormData(
       filePath,
@@ -74,6 +79,7 @@ class BackendApi {
       initialPrompt: initialPrompt,
       preprocess: preprocess,
       fastPreprocess: fastPreprocess,
+      diarize: diarize,
     );
     final res = await dio.post(
       '/transcribe',
@@ -94,6 +100,7 @@ class BackendApi {
     String? initialPrompt,
     bool? preprocess,
     bool? fastPreprocess,
+    bool? diarize,
   }) async* {
     final formData = await _buildFormData(
       filePath,
@@ -103,6 +110,7 @@ class BackendApi {
       initialPrompt: initialPrompt,
       preprocess: preprocess,
       fastPreprocess: fastPreprocess,
+      diarize: diarize,
     );
     final res = await dio.post(
       '/transcribe_stream',
@@ -131,15 +139,18 @@ class BackendApi {
     String? initialPrompt,
     bool? preprocess,
     bool? fastPreprocess,
+    bool? diarize,
     void Function(int sent, int total)? onSendProgress,
   }) async* {
     final qs = {
       'language': language ?? defaultLanguage,
       'model_size': modelSize ?? defaultModelSize,
       'quality': quality ?? defaultQuality,
-      if (initialPrompt != null && initialPrompt.isNotEmpty) 'initial_prompt': initialPrompt,
+      if (initialPrompt != null && initialPrompt.isNotEmpty)
+        'initial_prompt': initialPrompt,
       if (preprocess != null) 'preprocess': preprocess.toString(),
       if (fastPreprocess != null) 'fast_preprocess': fastPreprocess.toString(),
+      if (diarize != null) 'diarize': diarize ? 'true' : 'false',
     };
     final uri = Uri(path: '/transcribe_stream_upload', queryParameters: qs);
     final stream = File(filePath).openRead();
@@ -155,7 +166,9 @@ class BackendApi {
       onSendProgress: onSendProgress,
     );
     final body = res.data as ResponseBody;
-    final lines = body.stream.map((chunk) => utf8.decode(chunk)).transform(const LineSplitter());
+    final lines = body.stream
+        .map((chunk) => utf8.decode(chunk))
+        .transform(const LineSplitter());
     await for (final line in lines) {
       if (line.trim().isEmpty) continue;
       yield jsonDecode(line);
@@ -164,11 +177,13 @@ class BackendApi {
 
   Future<String> summarize(String transcript,
       {String style = "thai-formal", List<String>? sections}) async {
-    final res = await dio.post('/summarize', data: {
-      'transcript': transcript,
-      'style': style,
-      'sections': sections,
-    }, options: Options(receiveTimeout: const Duration(minutes: 2)));
+    final res = await dio.post('/summarize',
+        data: {
+          'transcript': transcript,
+          'style': style,
+          'sections': sections,
+        },
+        options: Options(receiveTimeout: const Duration(minutes: 2)));
     return (res.data as Map<String, dynamic>)['report_markdown'] as String;
   }
 }

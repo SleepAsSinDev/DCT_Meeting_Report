@@ -1,10 +1,20 @@
 import os, json as _json, tempfile as _tf, threading, subprocess
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 from faster_whisper import WhisperModel
+
+try:
+    from pyannote.audio import Pipeline as _DiarizationPipeline
+except ImportError:
+    _DiarizationPipeline = None
+
+try:
+    import torch as _torch
+except ImportError:
+    _torch = None
 
 _MODEL_SIZE_ENV = os.getenv("WHISPER_MODEL")
 
@@ -66,6 +76,20 @@ FFMPEG_BIN = (
     else _FFMPEG_ENV
 )
 
+DIARIZATION_MODEL_DEFAULT = os.getenv(
+    "DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1"
+)
+DIARIZATION_DEFAULT_ENABLED = (
+    os.getenv("DIARIZATION_DEFAULT", "false").strip().lower() == "true"
+)
+DIARIZATION_DEVICE_ENV = os.getenv("DIARIZATION_DEVICE")
+DIARIZATION_AUTH_TOKEN = (
+    os.getenv("DIARIZATION_AUTH_TOKEN")
+    or os.getenv("HUGGINGFACE_TOKEN")
+    or os.getenv("HF_TOKEN")
+    or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+)
+
 def _normalize_model_name(name: Optional[str]) -> str:
     if not name:
         return MODEL_SIZE_DEFAULT
@@ -94,6 +118,9 @@ app.add_middleware(
 _models_lock = threading.Lock()
 _models: Dict[str, WhisperModel] = {}
 
+_diarization_lock = threading.Lock()
+_diarization_pipelines: Dict[str, object] = {}
+
 def _get_model(name: str) -> WhisperModel:
     key = _normalize_model_name(name) + f"|t{CPU_THREADS_DEFAULT}|w{NUM_WORKERS_DEFAULT}|{COMPUTE_TYPE}"
     with _models_lock:
@@ -119,6 +146,7 @@ class Segment(BaseModel):
     start: float
     end: float
     text: str
+    speaker: Optional[str] = None
 
 def _choose_params(quality: str):
     q = _normalize_quality(quality)
@@ -175,6 +203,86 @@ def _maybe_preprocess(path_in: str, enable: bool, quick: bool=False) -> str:
     except Exception:
         return path_in
 
+def _get_diarization_pipeline(model_name: str):
+    if _DiarizationPipeline is None:
+        raise RuntimeError("pyannote.audio is not installed")
+    if not DIARIZATION_AUTH_TOKEN:
+        raise RuntimeError(
+            "missing DIARIZATION_AUTH_TOKEN (or HF_TOKEN/HUGGINGFACE_TOKEN)"
+        )
+    with _diarization_lock:
+        pipeline = _diarization_pipelines.get(model_name)
+        if pipeline is None:
+            pipeline = _DiarizationPipeline.from_pretrained(
+                model_name, use_auth_token=DIARIZATION_AUTH_TOKEN
+            )
+            device = DIARIZATION_DEVICE_ENV
+            if device:
+                pipeline.to(device)
+            elif _torch is not None and _torch.cuda.is_available():
+                pipeline.to("cuda")
+            _diarization_pipelines[model_name] = pipeline
+        return pipeline
+
+def _run_diarization(
+    wav_path: str, model_name: Optional[str] = None
+) -> Dict[str, object]:
+    model = model_name or DIARIZATION_MODEL_DEFAULT
+    try:
+        pipeline = _get_diarization_pipeline(model)
+    except Exception as exc:  # pragma: no cover - runtime dependent
+        return {
+            "applied": False,
+            "reason": str(exc),
+            "segments": [],
+            "model": model,
+        }
+    try:
+        diarization = pipeline(wav_path)
+    except Exception as exc:  # pragma: no cover - runtime dependent
+        return {
+            "applied": False,
+            "reason": str(exc),
+            "segments": [],
+            "model": model,
+        }
+    speaker_segments = []
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        speaker_segments.append(
+            {
+                "start": float(turn.start),
+                "end": float(turn.end),
+                "speaker": str(speaker),
+            }
+        )
+    return {
+        "applied": True,
+        "reason": None,
+        "segments": speaker_segments,
+        "model": model,
+    }
+
+def _assign_speakers_to_segments(
+    segments: List[Segment], speaker_segments: List[Dict[str, object]]
+) -> None:
+    if not segments or not speaker_segments:
+        return
+    for seg in segments:
+        best_label = None
+        best_overlap = 0.0
+        for entry in speaker_segments:
+            try:
+                s0 = float(entry.get("start", 0.0))
+                e0 = float(entry.get("end", 0.0))
+            except Exception:
+                continue
+            overlap = max(0.0, min(seg.end, e0) - max(seg.start, s0))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_label = str(entry.get("speaker", ""))
+        if best_label:
+            seg.speaker = best_label
+
 @app.get("/healthz")
 def healthz():
     return {
@@ -198,6 +306,7 @@ async def transcribe(
     model_size: str = Form(MODEL_SIZE_DEFAULT),
     quality: str = Form(QUALITY_DEFAULT),
     initial_prompt: Optional[str] = Form(None),
+    diarize: bool = Form(DIARIZATION_DEFAULT_ENABLED),
     preprocess: bool = Form(False),
     fast_preprocess: bool = Form(False),
 ):
@@ -214,6 +323,14 @@ async def transcribe(
 
     wav_path = _maybe_preprocess(tmp_path, preprocess, quick=fast_preprocess)
 
+    diarization_meta = {
+        "requested": diarize,
+        "applied": False,
+        "reason": None,
+        "segments": [],
+        "model": DIARIZATION_MODEL_DEFAULT,
+    }
+
     try:
         segments_gen, info = model.transcribe(
             wav_path,
@@ -226,6 +343,16 @@ async def transcribe(
         for seg in segments_gen:
             segments.append(Segment(start=seg.start, end=seg.end, text=seg.text))
             text_parts.append(seg.text)
+        if diarize:
+            diarization_result = _run_diarization(
+                wav_path, os.getenv("DIARIZATION_MODEL", DIARIZATION_MODEL_DEFAULT)
+            )
+            diarization_meta.update(diarization_result)
+            if diarization_result.get("applied"):
+                _assign_speakers_to_segments(segments, diarization_result["segments"])
+        speakers = sorted(
+            {seg.speaker for seg in segments if getattr(seg, "speaker", None)}
+        )
         return {
             "text": " ".join(text_parts).strip(),
             "language": getattr(info, "language", language),
@@ -237,6 +364,11 @@ async def transcribe(
             "num_workers": NUM_WORKERS_DEFAULT,
             "preprocess": preprocess,
             "fast_preprocess": fast_preprocess,
+            "speakers": speakers,
+            "speaker_segments": diarization_meta["segments"]
+            if diarization_meta.get("applied")
+            else [],
+            "diarization": diarization_meta,
         }
     finally:
         try: os.remove(tmp_path)
@@ -252,6 +384,7 @@ async def transcribe_stream(
     model_size: str = Form(MODEL_SIZE_DEFAULT),
     quality: str = Form(QUALITY_DEFAULT),
     initial_prompt: Optional[str] = Form(None),
+    diarize: bool = Form(DIARIZATION_DEFAULT_ENABLED),
     preprocess: bool = Form(False),
     fast_preprocess: bool = Form(False),
 ):
@@ -279,12 +412,40 @@ async def transcribe_stream(
             )
             full_text = []
             duration = float(getattr(info, "duration", 0.0) or 0.0)
+            collected_segments: List[Segment] = []
             for seg in segments_gen:
+                collected_segment = Segment(
+                    start=seg.start, end=seg.end, text=seg.text
+                )
+                collected_segments.append(collected_segment)
                 full_text.append(seg.text)
                 progress = (seg.end/duration*100.0) if duration>0 else 0.0
                 yield (_json.dumps({
                     "event":"progress","progress":round(progress,2),"partial_text":seg.text
                 })+"\n").encode("utf-8")
+            diarization_meta = {
+                "requested": diarize,
+                "applied": False,
+                "reason": None,
+                "segments": [],
+                "model": DIARIZATION_MODEL_DEFAULT,
+            }
+            if diarize:
+                diarization_result = _run_diarization(
+                    wav_path, os.getenv("DIARIZATION_MODEL", DIARIZATION_MODEL_DEFAULT)
+                )
+                diarization_meta.update(diarization_result)
+                if diarization_result.get("applied"):
+                    _assign_speakers_to_segments(
+                        collected_segments, diarization_result["segments"]
+                    )
+            speakers = sorted(
+                {
+                    seg.speaker
+                    for seg in collected_segments
+                    if getattr(seg, "speaker", None)
+                }
+            )
             yield (_json.dumps({
                 "event":"done","text":" ".join(full_text).strip(),
                 "language": getattr(info,"language","auto"),
@@ -295,6 +456,12 @@ async def transcribe_stream(
                 "num_workers": NUM_WORKERS_DEFAULT,
                 "preprocess": preprocess,
                 "fast_preprocess": fast_preprocess,
+                "segments": [s.model_dump() for s in collected_segments],
+                "speakers": speakers,
+                "speaker_segments": diarization_meta["segments"]
+                if diarization_meta.get("applied")
+                else [],
+                "diarization": diarization_meta,
             })+"\n").encode("utf-8")
         finally:
             try: os.remove(tmp_path)
@@ -313,6 +480,7 @@ async def transcribe_stream_upload(
     model_size: str = Query(MODEL_SIZE_DEFAULT),
     quality: str = Query(QUALITY_DEFAULT),
     initial_prompt: Optional[str] = Query(None),
+    diarize: bool = Query(DIARIZATION_DEFAULT_ENABLED),
     preprocess: bool = Query(False),
     fast_preprocess: bool = Query(False),
 ):
@@ -344,9 +512,13 @@ async def transcribe_stream_upload(
                 **params,
             )
             collected = []
+            collected_segments: List[Segment] = []
             duration = float(getattr(info, "duration", 0.0) or 0.0)
             for seg in segments_gen:
                 collected.append(seg.text)
+                collected_segments.append(
+                    Segment(start=seg.start, end=seg.end, text=seg.text)
+                )
                 progress = (seg.end / duration * 100.0) if duration > 0 else 0.0
                 yield (
                     _json.dumps(
@@ -358,6 +530,29 @@ async def transcribe_stream_upload(
                     )
                     + "\n"
                 ).encode("utf-8")
+            diarization_meta = {
+                "requested": diarize,
+                "applied": False,
+                "reason": None,
+                "segments": [],
+                "model": DIARIZATION_MODEL_DEFAULT,
+            }
+            if diarize:
+                diarization_result = _run_diarization(
+                    wav_path, os.getenv("DIARIZATION_MODEL", DIARIZATION_MODEL_DEFAULT)
+                )
+                diarization_meta.update(diarization_result)
+                if diarization_result.get("applied"):
+                    _assign_speakers_to_segments(
+                        collected_segments, diarization_result["segments"]
+                    )
+            speakers = sorted(
+                {
+                    seg.speaker
+                    for seg in collected_segments
+                    if getattr(seg, "speaker", None)
+                }
+            )
             yield (
                 _json.dumps(
                     {
@@ -371,6 +566,12 @@ async def transcribe_stream_upload(
                         "num_workers": NUM_WORKERS_DEFAULT,
                         "preprocess": preprocess,
                         "fast_preprocess": fast_preprocess,
+                        "segments": [s.model_dump() for s in collected_segments],
+                        "speakers": list(speakers),
+                        "speaker_segments": diarization_meta["segments"]
+                        if diarization_meta.get("applied")
+                        else [],
+                        "diarization": diarization_meta,
                     }
                 )
                 + "\n"
